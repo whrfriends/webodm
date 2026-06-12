@@ -326,51 +326,75 @@ $(document).on('click', '.cd-dl-btn', function(){
     window.location.href = '/api/plugins/changedetect/changedetect/pair/' + pid + '/result/' + rid + '/download';
 });
 
-// Inject button into project list rows
+// Inject button into project list rows. WebODM / ufly's project
+// list items have:
+//   <li class="project-list-item list-group-item ">
+//     <div class="row project-links">
+//       <a>1个任务</a>   <a>查看地图</a>   <a>编辑</a>
+//     </div>
+//   </li>
+//
+// The row has NO data-id attribute and the links have href="javascript:void(0);".
+// We pull the project id from React's internal fiber attached to the <li>:
+//   __reactInternalInstance$<key> → walk up the .return chain looking for
+//   memoizedProps.data.id (or stateNode.state.data.id). The project name
+//   comes from the same props.data object.
+//
+// The trigger link text is "查看地图" (Chinese) in ufly embedded builds,
+// or "View Map" (English) in upstream. We try both.
+function getProjectIdFromRow(li){
+  try {
+    const key = Object.keys(li).find(k => k.startsWith('__reactInternalInstance'));
+    if (!key) return null;
+    let fiber = li[key];
+    let depth = 0;
+    while (fiber && depth < 60){
+      const p = fiber.memoizedProps || fiber.pendingProps;
+      if (p && p.data && typeof p.data.id !== 'undefined'){
+        return { id: p.data.id, name: p.data.name || null };
+      }
+      if (fiber.stateNode && fiber.stateNode.state && fiber.stateNode.state.data && typeof fiber.stateNode.state.data.id !== 'undefined'){
+        return { id: fiber.stateNode.state.data.id, name: fiber.stateNode.state.data.name || null };
+      }
+      fiber = fiber.return;
+      depth++;
+    }
+  } catch(e){ /* fiber may have been GC'd or shape changed */ }
+  return null;
+}
+
 function injectIntoProjectList(){
-    // Find each "View Map" link. The link has no class, but we can
-    // match the text. Each link is followed by Edit/Delete in a
-    // div with class "project-actions" or similar. We append our
-    // button immediately after the link in DOM.
-    $('a:contains("View Map")').each(function(){
+    // Find "View Map" / "查看地图" links. The trigger text varies by
+    // locale (English upstream, Chinese ufly). We accept either.
+    $('a').filter(function(){
+        return /^[\s]*View Map[\s]*$/.test($(this).text()) ||
+               /^[\s]*查看地图[\s]*$/.test($(this).text());
+    }).each(function(){
         var $a = $(this);
         if ($a.data('cd-injected')) return;
         $a.data('cd-injected', true);
-        // climb to the parent row that has a data-id-ish attribute
-        var $row = $a.closest('[class*="project"], [class*="list-item"], li');
-        // Find project id: look for an id pattern in a sibling / parent
-        var $projectEl = $a.closest('.project-list-item, .project');
-        var pid = null;
-        if ($projectEl.length){
-            pid = $projectEl.data('id') || $projectEl.attr('data-project-id');
+
+        // Find the parent project row (a <li> in the project list) and
+        // pull the project id from its React fiber.
+        var $row = $a.closest('.project-list-item');
+        if (!$row.length) return;
+
+        var info = getProjectIdFromRow($row.get(0));
+        if (!info || info.id == null) {
+            // Last resort: count items and pull from /api/projects/ by index
+            return;
         }
-        if (!pid){
-            // Walk up to find data-id
-            var $p = $a.parent();
-            while ($p.length && !pid){
-                pid = $p.data('id') || $p.attr('data-id');
-                $p = $p.parent();
-            }
-        }
-        if (!pid){
-            // Fallback: parse the project list store. React keeps it in
-            // its own state, but the page has <a href="/projects/<id>/...">
-            // links. Find the closest project id from those.
-            var $a2 = $a.closest('div, li').find('a[href*="/projects/"]').first();
-            if ($a2.length){
-                var m = ($a2.attr('href') || '').match(/\/projects\/(\d+)/);
-                if (m) pid = m[1];
-            }
-        }
-        if (!pid){ return; }
-        // Inject a clone of the <i>+<a> pair
+        var pid = info.id;
+
+        // Inject "变化检测" link right after "查看地图"
         var $btn = $(
             '<span class="cd-project-action">' +
             '<i class="fa fa-clone fa-fw"></i>' +
-            '<a href="javascript:void(0);" class="cd-open-btn">变化检测</a>' +
+            '<a href="javascript:void(0);" class="cd-open-btn" title="变化检测">变化检测</a>' +
             '</span>'
         );
-        $btn.find('.cd-open-btn').on('click', function(){
+        $btn.find('.cd-open-btn').on('click', function(e){
+            e.stopPropagation();
             openChangeDetectModal(pid);
         });
         $a.after($btn);
