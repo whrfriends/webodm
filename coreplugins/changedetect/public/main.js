@@ -92,10 +92,14 @@ window.CDToast = function(message, kind){
 function fetchJSON(url, opts){
     opts = opts || {};
     opts.headers = opts.headers || {};
+    // Always ask for JSON. WebODM DRF returns HTML for browser
+    // navigation on the same URL, which would break r.json().
+    opts.headers['Accept'] = opts.headers['Accept'] || 'application/json';
+    opts.headers['X-Requested-With'] = opts.headers['X-Requested-With'] || 'XMLHttpRequest';
     if (opts.method && opts.method !== 'GET'){
         opts.headers['X-CSRFToken'] = getCSRFToken();
     }
-    return fetch(url, opts).then(function(r){
+    return fetch(url, {credentials: 'same-origin', ...opts}).then(function(r){
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
     });
@@ -155,10 +159,11 @@ function openChangeDetectModal(projectId){
     }).catch(function(e){
         $('#cd-t1, #cd-t2').html('<option value="">(加载任务失败: ' + e.message + ')</option>');
     });
-    // show all 4 steps
-    $('#cd-step-config, #cd-step-running, #cd-step-done').hide();
+    // show all relevant steps at once
+    $('#cd-step-config').show();
+    $('#cd-step-running, #cd-step-done').hide();
     $('#cd-step-list').show();
-    $('#cd-btn-submit').show().text('提交');
+    $('#cd-btn-submit').show().prop('disabled', false).text('提交');
     $('#cd-btn-view').hide();
     // load pair history
     refreshPairsTable(projectId);
@@ -167,7 +172,10 @@ function openChangeDetectModal(projectId){
 
 function refreshPairsTable(projectId){
     fetchJSON('/api/plugins/changedetect/project/' + projectId + '/changedetect/list').then(function(json){
-        var pairs = json.results || json || [];
+        // Server returns {"pairs": [...]}; tolerate older {"results": [...]}
+        // and bare arrays.
+        var pairs = (json && (json.pairs || json.results)) || json || [];
+        if (!Array.isArray(pairs)) pairs = [];
         var $tb = $('#cd-pairs-tbody');
         $tb.empty();
         if (!pairs.length){
@@ -193,7 +201,8 @@ function refreshPairsTable(projectId){
             $tb.append(
                 '<tr>' +
                 '<td>' + p.id + '</td>' +
-                '<td><code>' + (p.task_a || '').slice(0,8) + '</code> → <code>' + (p.task_b || '').slice(0,8) + '</code></td>' +
+                '<td><code>' + $('<div>').text((p.task_before_name || p.task_a || '').slice(0, 18)).html() + '</code> → ' +
+                '<code>' + $('<div>').text((p.task_after_name || p.task_b || '').slice(0, 18)).html() + '</code></td>' +
                 '<td>' + statusBadge + '</td>' +
                 '<td>' + resultCell + '</td>' +
                 '<td>' + viewBtn + '</td>' +
