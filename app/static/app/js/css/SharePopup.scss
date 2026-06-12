@@ -1,0 +1,106 @@
+.sharePopup{
+	position: absolute;
+	&.top{
+		bottom: 0;
+	}
+	&.bottom{
+		top: 0;
+	}
+	right: 0;
+	pointer-events: none;
+
+	.sharePopupContainer{
+		pointer-events: auto;
+		position: relative;
+		display: block;
+	    left: -26px;
+    	min-width: 280px;
+
+		.fa-exclamation-triangle{
+			margin-right: 4px;
+		}
+
+		.close{
+			right: 0;
+		}
+
+		.link-alert{
+			padding: 8px;
+		}
+
+		label{
+			width: 100%;
+		}
+
+		&.top{
+			top: -43px;
+		}
+		&.bottom{
+		    top: 153px;
+    		left: -46px;
+		}
+
+		&.popover.top > .arrow{
+			left: auto;
+			right: 60px;
+		}
+		&.popover.bottom > .arrow{
+			left: 25px;
+		}
+
+		&.shareProject.top{
+			left: 0px;
+
+			& > .arrow{
+				right: 20px;
+			}
+		}
+
+		h3.popover-title{
+			font-size: 20px;
+			padding-top: 8px;
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+		}
+
+		.checkboxes{
+			display: flex;
+			justify-content: space-between;
+		}
+
+		.btn-qr{
+			max-height: 32px;
+		}
+
+		.checkbox{
+			margin-top: 0;
+			&.last{
+				margin-left: 12px;
+			}
+		}
+
+		.fa-sync{
+			margin-left: -25px;
+			margin-right: 5px;
+		}
+
+		.share-links{
+			& > div{
+				margin-top: 8px;
+				&:first-child{
+					margin-top: 4px;
+				}
+			}
+			max-height: 0;
+			overflow: hidden;
+			transition: max-height 1s ease-in-out;
+			
+			&.show{
+				max-height: 800px;
+				height: auto;
+			}
+		}
+	}
+}
+

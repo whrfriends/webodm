@@ -1,0 +1,37 @@
+{% extends "app/plugins/templates/base.html" %}
+{% load i18n %}
+
+{% block content %}
+<!--
+  Road Attributes entry. The vanilla-JS UI lives in public/main.js, which is
+  auto-included by include_js_files() and exposes window.roadAttributesInit.
+  We call it directly here — no SystemJS, no build/ bundle required.
+-->
+<div id="road-attributes-app"></div>
+<script>
+(function () {
+  function boot() {
+    var mountEl = document.getElementById('road-attributes-app');
+    if (!mountEl) return;
+    window.roadAttributesInit({ mountEl: mountEl });
+  }
+
+  if (typeof window.roadAttributesInit === 'function') {
+    boot();
+  } else {
+    // main.js is loaded by Django after the page body; wait briefly.
+    var tries = 0;
+    var t = setInterval(function () {
+      tries++;
+      if (typeof window.roadAttributesInit === 'function') {
+        clearInterval(t);
+        boot();
+      } else if (tries > 100) {
+        clearInterval(t);
+        console.error('roadAttributesInit never appeared on window');
+      }
+    }, 50);
+  }
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,137 @@
+{% extends 'registration/registration_base.html' %}
+{% load i18n %}
+{% load settings %}
+
+{% block registration_content %}
+    {% if form.errors %}
+        <div class="alert alert-warning">
+            <p><strong>{% trans "Invalid credentials." %}</strong> {% trans "Note that both fields are case-sensitive." %}</p>
+        </div>
+    {% endif %}
+    {% block messages %}
+        {% for message in messages %}
+            <div class="alert alert-{{ message.tags }} alert-dismissible">
+                <button type="button" class="close" data-dismiss="alert" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+                {{ message }}
+            </div>
+        {% endfor %}
+    {% endblock %}
+
+    {% is_single_user_mode as autologin %}
+    {% has_external_auth as ext_auth %}
+    {% has_oidc_auth as oidc_auth %}
+    {% oidc_auth_providers as oidc_providers %}
+    {% reset_password_link as reset_pwd_link %}
+
+    {% if autologin %}
+        <script>location.href='/';</script>
+    {% else %}
+    
+    {% if oidc_auth %}
+    <div class="form-horizontal top-buffer" id="oidcLoginContainer">
+        {% for provider in oidc_providers %}
+        <div class="form-group">
+            <div class="col-sm-12 text-center">
+                <a class="btn btn-primary oidcLoginButton" href="{% url 'oidc_login' forloop.counter0 %}"><i class="{{ provider.icon }}"></i> {% blocktrans with provider_name=provider.name %}Login with {{ provider_name }}{% endblocktrans %}</a>
+            </div>
+        </div>
+        {% endfor %}
+
+        <div style="text-align: center; margin-top: 8px; margin-bottom: 16px;">
+            <a id="oidcOtherLogin" href="javascript:oidcOtherLogin()">{% trans 'Manual login' %}</a>
+        </div>
+    </div>
+    <script>
+        function oidcOtherLogin(){
+            $("#authLoading").hide();
+            $("#loginForm").toggle();
+        }
+        (function(){
+            var next = new URLSearchParams(new URL(window.location.href).search).get('next');
+            if (!next) return;
+            var buttons = document.querySelectorAll('.oidcLoginButton');
+            for (var i = 0; i < buttons.length; i++){
+                buttons[i].href = buttons[i].href + "?next=" + encodeURIComponent(next);
+            }
+        })();
+    </script>
+    {% endif %}
+
+    <form id="loginForm" {% if ext_auth or oidc_auth %} style="display: none" {% endif %} action="{% url 'login' %}" method="post" class="form-horizontal" role="form">{% csrf_token %}
+        {% for field in form %}
+            {% include 'registration/form_field.html' %}
+        {% endfor %}
+        <input type="hidden" name="next" value="" id="loginNext" />
+        <script>
+            var loginNext = document.getElementById("loginNext");
+            var value = new URLSearchParams(new URL(window.location.href).search).get('next');
+            if (value) loginNext.value = value;
+        </script>
+        <div class="form-group">
+            <div class="col-sm-offset-2 col-sm-10">
+              <button type="submit" class="btn btn-primary"><i class="fa fa-lock"></i> {% trans 'Login' %}</button>
+            </div>
+            <div class="top-buffer col-sm-offset-2 col-sm-10">
+                {% if reset_pwd_link != '' %}
+                <p><a href="{{ reset_pwd_link }}">{% trans "Forgot your password?" %}</a></p>
+                {% else %}
+                <p><a href="javascript:toggleForgotPasswordHint();">{% trans "Forgot your password?" %}</a></p>
+                <script>function toggleForgotPasswordHint(){ $("#forgotPasswordHint").toggle(); }</script>
+                <div id="forgotPasswordHint" style="display: none; font-size: 90%; padding: 4px;" class="theme-secondary">
+                    You can reset the administrator password by running the following command:
+                    <span class="theme-background-highlight" style="padding: 4px; margin: 8px 0; display: inline-block;">./webodm.sh resetadminpassword yournewpass</span><br/>
+                    If you used WebODM Manager to launch WebODM, find the "Reset Password" button within the maintenance panel or within one of WebODM Manager menus.
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </form>
+
+    {% if ext_auth %}
+    <div class="text-center" id="authLoading">
+        <i class="fa fa-spin fa-circle-notch fa-spin fa-fw fa-2x"></i>
+    </div>
+    <script>
+    function getAutoLoginCookie() {
+        var value = "; " + document.cookie;
+        var parts = value.split("; autologin=");
+        if (parts.length === 2) return parts.pop().split(';').shift();
+    }
+    function delAutoLoginCookie() {
+        var domain = getAutoLoginCookie();
+        document.cookie = 'autologin=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT; Domain=' + domain + ';';
+    }
+    function showLoginForm(){
+        $("#authLoading").hide();
+        $("#loginForm").show();
+    }
+    $(function(){
+        if (getAutoLoginCookie() !== undefined){
+            $.ajax({
+                url: "/api/external-token-auth/",
+                type: "POST",
+                xhrFields: {
+                    withCredentials: true
+                },
+            }).done(function(res){
+                delAutoLoginCookie();
+                if (res.redirect){
+                    location.href = res.redirect;
+                }else{
+                    if (res.error) console.error(res.error);
+                    showLoginForm();
+                }
+            }).fail(function(){
+                delAutoLoginCookie();
+                showLoginForm();
+                console.error("Auto login failed");
+            });
+        }else{
+            showLoginForm();
+        }
+    });
+    </script>
+    {% endif %}
+
+    {% endif %}
+{% endblock %}

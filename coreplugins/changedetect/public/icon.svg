@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Two overlapping circles representing temporal comparison -->
+  <circle cx="9" cy="12" r="6" fill="#1e88e5" fill-opacity="0.4"/>
+  <circle cx="15" cy="12" r="6" fill="#ff3b30" fill-opacity="0.4"/>
+  <!-- Center exclamation for "change detected" -->
+  <line x1="12" y1="9" x2="12" y2="13" stroke="#000" stroke-width="1.5"/>
+  <circle cx="12" cy="15.5" r="0.8" fill="#000"/>
+</svg>

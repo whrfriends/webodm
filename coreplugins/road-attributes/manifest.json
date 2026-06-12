@@ -1,0 +1,13 @@
+{
+  "name": "road-attributes",
+  "webodmMinVersion": "2.0.0",
+  "description": "路面巡检属性记录:道路/路段/属性字典/属性记录/照片证据;可与 flight-planner 巡检任务和 WebODM 3D 任务关联",
+  "version": "1.0.0",
+  "author": "whrui",
+  "email": "whrui@example.com",
+  "repository": "",
+  "tags": ["webodm", "road", "inspection", "photogrammetry", "drone", "attributes"],
+  "homepage": "",
+  "experimental": false,
+  "deprecated": false
+}

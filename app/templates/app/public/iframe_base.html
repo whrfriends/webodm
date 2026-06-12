@@ -1,0 +1,8 @@
+{% extends "app/base.html" %}
+
+{% block body %}
+<div id="iframe">
+    <style type="text/css">body{height: 100%;}</style>
+    {% block content %}{% endblock %}
+</div>
+{% endblock %}

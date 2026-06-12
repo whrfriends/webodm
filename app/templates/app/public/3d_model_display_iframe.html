@@ -1,0 +1,27 @@
+{% extends "app/public/iframe_base.html" %}
+
+{% block headers-before-bundle %}
+    {% include "3d_model_css.html" %}
+{% endblock %}
+
+{% block content %}
+    <style type="text/css">
+    #td-model-placeholder{
+        position: absolute !important; top: 0; bottom: 0; left: 0; right: 0;
+        margin-top: 0px !important; 
+        height: 100% !important;
+    }
+    </style>
+
+    <div data-modelview class="full-height"
+        {% for key, value in params %}
+            data-{{key}}="{{value}}"
+        {% endfor %}
+    >
+        {% include "3d_model_placeholder.html" %}
+    </div>
+
+    {% include "3d_model_js.html" %}
+    {% load render_bundle from webpack_loader %}
+    {% render_bundle 'ModelView' attrs='async' %}
+{% endblock %}

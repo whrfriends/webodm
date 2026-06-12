@@ -1,0 +1,13 @@
+{
+	"name": "Change Detection",
+	"webodmMinVersion": "2.5.1",
+	"description": "Compare two tasks in a project to detect temporal changes (pixel + DSM differencing) and surface hazard zones",
+	"version": "0.1.0",
+	"author": "whrui",
+	"email": "whrui@local",
+	"repository": "",
+	"tags": ["change-detection", "temporal", "dsm", "orthophoto", "hazard"],
+	"homepage": "",
+	"experimental": true,
+	"deprecated": false
+}

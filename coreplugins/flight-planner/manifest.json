@@ -1,0 +1,11 @@
+{
+	"name": "Flight Planner",
+	"webodmMinVersion": "0.7.1",
+	"description": "UAV Flight Path Planning Module",
+	"version": "1.0.0",
+	"author": "Gemini CLI",
+	"email": "gemini@example.com",
+	"tags": ["uav", "mission", "planning"],
+	"experimental": true,
+	"deprecated": false
+}

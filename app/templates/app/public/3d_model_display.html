@@ -1,0 +1,23 @@
+{% extends "app/public/base.html" %}
+
+{% block headers-before-bundle %}
+    {% include "3d_model_css.html" %}
+{% endblock %}
+
+{% block content %}
+
+    <h3 class="model-title" title="{{title}}"><i class="fa fa-cube"></i> {{title}}</h3>
+
+    <div data-modelview class="full-height"
+        {% for key, value in params %}
+			data-{{key}}="{{value}}"
+		{% endfor %}
+    >
+        {% include "3d_model_placeholder.html" %}
+    </div>
+
+    {% include "3d_model_js.html" %}
+    {% load render_bundle from webpack_loader %}
+    {% render_bundle 'ModelView' attrs='async' %}
+
+{% endblock %}

@@ -1,0 +1,36 @@
+{% extends "app/plugins/templates/base.html" %}
+{% load i18n %}
+
+{% block content %}
+<!--
+  Flight Planner is rendered by:
+    1. WebODM auto-includes /plugins/flight-planner/main.js (via include_js_files)
+    2. main.js exposes window.flightPlannerInit(opts) — a vanilla-JS entry
+       that loads OpenLayers + hydrates the full app shell (sidebar + map)
+       into the container passed via opts.mountEl.
+    3. This template's React wrapper (build/app.js) renders a single
+       <div id="fp-app-mount">, and on componentDidMount calls
+       window.flightPlannerInit({mountEl: mount}).
+-->
+<div id="flight-planner-app"></div>
+
+<script>
+(function(){
+  var pluginName = "flight-planner";
+  var cacheBuster = "?v=" + new Date().getTime();
+  console.log("Initializing Flight Planner...");
+  PluginsAPI.App.ready([
+    pluginName + '/build/app.js' + cacheBuster
+  ], function(args, App){
+    try {
+      var component = App.default || App;
+      ReactDOM.render(React.createElement(component, {}), document.getElementById("flight-planner-app"));
+      console.log("React Render successful");
+    } catch (e) {
+      console.error("React Render failed:", e);
+      document.getElementById("flight-planner-app").innerHTML = "<div class='alert alert-danger'>Failed to render Flight Planner: " + e.message + "</div>";
+    }
+  });
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,22 @@
+# Chaining this file to the main docker-compose file adds
+# a default processing node instance. This is best for users
+# who are just getting started with WebODM.
+
+version: '2.1'
+services:
+  webapp:
+    depends_on:
+      - node-odx-1
+    environment:
+      - WO_DEFAULT_NODES
+  node-odx-1:
+    # 自定义镜像,内置 Noto Sans CJK 中文字体 + 中文版 ODM 报告生成器
+    # 重建方法: bash odm_patches/build_zh_image.sh
+    image: webodm/nodeodx:zh
+    container_name: node-odx-1
+    expose:
+      - "3000"
+    restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
+    oom_score_adj: 500

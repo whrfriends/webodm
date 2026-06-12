@@ -1,0 +1,124 @@
+/* Change Detection plugin — standalone project page */
+
+.cd-standalone {
+    padding: 20px;
+    font-size: 14px;
+    color: #333;
+}
+
+.cd-standalone h3 {
+    margin-top: 0;
+    color: #2c3e50;
+}
+
+.cd-standalone .panel {
+    border-radius: 4px;
+}
+
+.cd-standalone .panel-heading {
+    background: #f5f5f5;
+    font-size: 14px;
+}
+
+.cd-standalone .form-group {
+    margin-bottom: 10px;
+}
+
+.cd-standalone .form-group label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 2px;
+}
+
+.cd-standalone .form-control {
+    font-size: 13px;
+}
+
+.cd-standalone .checkbox {
+    font-weight: 600;
+    margin: 8px 0 4px;
+}
+
+.cd-standalone .threshold-row {
+    display: grid;
+    grid-template-columns: auto 1fr auto 1fr;
+    gap: 4px 6px;
+    align-items: center;
+    margin: 4px 0 8px;
+    padding-left: 18px;
+}
+
+.cd-standalone .threshold-row label {
+    font-weight: normal;
+    font-size: 11px;
+    color: #666;
+    margin: 0;
+}
+
+.cd-standalone .cd-standalone-loading,
+.cd-standalone .cd-standalone-empty {
+    padding: 12px;
+    text-align: center;
+    color: #888;
+}
+
+.cd-standalone .cd-standalone-section-title {
+    margin-bottom: 8px;
+    color: #555;
+    font-size: 13px;
+}
+
+.cd-standalone .cd-standalone-table {
+    margin-bottom: 0;
+    font-size: 12px;
+}
+
+.cd-standalone .cd-standalone-table thead th {
+    background: #f9f9f9;
+    border-bottom: 1px solid #ddd;
+    font-weight: 600;
+    color: #555;
+    padding: 6px 8px;
+}
+
+.cd-standalone .cd-standalone-table tbody td {
+    padding: 6px 8px;
+    vertical-align: middle;
+}
+
+.cd-standalone .cd-standalone-table tr.active {
+    background: #f0f7fc;
+}
+
+/* Status badge (same colors as the map panel) */
+.cd-standalone .cd-status {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    line-height: 1.4;
+}
+
+.cd-standalone .cd-status-queued,
+.cd-standalone .cd-status-running {
+    background: #fff3cd;
+    color: #856404;
+}
+
+.cd-standalone .cd-status-done {
+    background: #d4edda;
+    color: #155724;
+}
+
+.cd-standalone .cd-status-failed {
+    background: #f8d7da;
+    color: #721c24;
+}
+
+.cd-standalone .cd-status-pending {
+    background: #e2e3e5;
+    color: #6c757d;
+}

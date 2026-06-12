@@ -1,0 +1,46 @@
+{% extends "app/plugins/templates/base.html" %}
+{% load i18n %}
+
+{% block content %}
+<!--
+  Project-level Change Detection page.
+  Mounts the ProjectChangedetect React component, which:
+    1. Lets the user pick a project, two tasks, and thresholds
+    2. Submits the comparison via the same /api/plugins/changedetect endpoints
+    3. Shows live history of all pairs in that project
+    4. Supports download of result GeoJSONs (no map overlay)
+-->
+<div id="cd-project-app"></div>
+
+<script>
+(function(){
+  var pluginName = "changedetect";
+  // Pull ?project=<id> from the URL to bootstrap the picker
+  function getQueryParam(name) {
+    var m = window.location.search.match(new RegExp("[?&]" + name + "=([^&]*)"));
+    return m ? decodeURIComponent(m[1]) : "";
+  }
+  var initialProjectId = getQueryParam("project");
+  var cacheBuster = "?v=" + new Date().getTime();
+
+  console.log("Initializing Project Changedetect...");
+  PluginsAPI.App.ready([
+    pluginName + '/build/ProjectChangedetect.js' + cacheBuster,
+    pluginName + '/build/ProjectChangedetect.css' + cacheBuster,
+  ], function(args, Component){
+    try {
+      var comp = Component.default || Component;
+      ReactDOM.render(
+        React.createElement(comp, { initialProjectId: initialProjectId }),
+        document.getElementById("cd-project-app")
+      );
+      console.log("ProjectChangedetect rendered");
+    } catch (e) {
+      console.error("ProjectChangedetect render failed:", e);
+      document.getElementById("cd-project-app").innerHTML =
+        "<div class='alert alert-danger'>Failed to render: " + e.message + "</div>";
+    }
+  });
+})();
+</script>
+{% endblock %}
