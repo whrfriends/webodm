@@ -149,6 +149,127 @@ register('/tmp/__ufly_cjk_marker__',
          patch_install_cjk_fonts)
 
 
+# --- Patch 4: forward LLM API key from host to container -----------------
+# The changedetect plugin's AI features (ai.py) read the LLM key from
+# the container environment. We copy it from the host's
+# ~/.hermes/.env on every container start so the user doesn't have
+# to do anything special after a rebuild.
+def patch_forward_llm_key(_target):
+    """Best-effort forward of MINIMAX_CN_API_KEY + MINIMAX_CN_BASE_URL
+    from the host's Hermes .env into the webapp container's env.
+    """
+    import subprocess
+    # Read from a path the host has bind-mounted or that ufly's
+    # wrapper wrote before our patch ran. We try a few locations.
+    candidates = [
+        '/var/lib/ufly/host.env',         # ufly-style host env bridge
+        '/host-root/.hermes/.env',        # bind-mount of host home
+        os.path.expanduser('~/.hermes/.env'),  # in-container home (rare)
+    ]
+    parsed = {}
+    for path in candidates:
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#') or '=' not in line:
+                        continue
+                    k, v = line.split('=', 1)
+                    v = v.strip().strip('"').strip("'")
+                    parsed[k.strip()] = v
+        except Exception as e:
+            log.debug(f"could not read {path}: {e}")
+    if not parsed.get('MINIMAX_CN_API_KEY'):
+        # Try: maybe the host passed it through docker-compose env:
+        # `docker inspect webapp` would show it, but we can't run that
+        # from inside. Fall back to asking the orchestrator via a
+        # well-known path. We also accept it being set in our own
+        # process env (ufly wraps the container with the host's env).
+        for k in ('MINIMAX_CN_API_KEY', 'MINIMAX_CN_BASE_URL'):
+            v = os.environ.get(k)
+            if v:
+                parsed[k] = v
+    if not parsed:
+        log.info("LLM API key: not found in any candidate path; AI endpoints will return a clear error")
+        return None
+    # Write to /tmp/ufly-llm.env which start.sh sources before starting
+    # gunicorn. Idempotent: overwrite every start so the user can edit
+    # the host .env and a container restart picks up the new key.
+    target = '/tmp/ufly-llm.env'
+    try:
+        with open(target, 'w') as f:
+            for k, v in parsed.items():
+                if k.startswith('MINIMAX_CN_'):
+                    f.write(f'{k}="{v}"\n')
+        log.info(f"LLM API key: wrote {len(parsed)} vars to {target}")
+    except Exception as e:
+        log.warning(f"failed to write {target}: {e}")
+    return None
+
+
+register('/tmp/__ufly_llm_marker__',
+         'LLM API key forward failed',  # never present → runs every start
+         patch_forward_llm_key)
+
+
+# --- Patch 5: register the changedetect plugin in INSTALLED_APPS -------
+# The ufly 嵌入版 image's webodm/settings.py ships without the
+# changedetect plugin in INSTALLED_APPS, so Django's migration
+# machinery (manage.py migrate, makemigrations, etc) doesn't see our
+# models. WebODM's plugin loader registers the plugin at *runtime*,
+# but that happens after `apps.populate()` has already run, so DB
+# migrations are skipped. We patch the in-container settings.py
+# to add our AppConfig — idempotent, re-applied on every container
+# start.
+def patch_settings_installed_apps(target):
+    with open(target, 'r', encoding='utf-8') as f:
+        src = f.read()
+    if 'coreplugins.changedetect.apps.ChangeDetectConfig' in src:
+        return None  # already patched
+    # Insert the entry just after the line containing 'nodeodm','
+    # which is the last plugin in the list. We use a regex so we
+    # tolerate the exact trailing whitespace.
+    import re
+    m = re.search(r"^(\s*'nodeodm',\s*)$", src, re.MULTILINE)
+    if not m:
+        log.warning("could not find 'nodeodm' entry in INSTALLED_APPS; "
+                    "skipping changedetect patch")
+        return None
+    new = src[:m.end()] + "\n    'coreplugins.changedetect.apps.ChangeDetectConfig'," + src[m.end():]
+    return new
+
+
+register('/webodm/webodm/settings.py',
+         'coreplugins.changedetect.apps.ChangeDetectConfig',
+         patch_settings_installed_apps)
+
+
+# --- Patch 6: source /tmp/ufly-llm.env in start.sh before gunicorn ------
+# Patch 4 writes the LLM key file but start.sh never sources it, so the
+# gunicorn master process ends up with no MINIMAX_CN_API_KEY in its
+# environment — every LLM call then fails with the "key not set" error.
+# Fix: inject a single `source` line right above the gunicorn call.
+def patch_start_sh_source_llm_env(target):
+    with open(target, 'r', encoding='utf-8') as f:
+        src = f.read()
+    if 'source /tmp/ufly-llm.env' in src:
+        return None  # already injected
+    # The marker we look for is the start of the gunicorn command line.
+    marker = 'gunicorn webodm.wsgi --bind'
+    if marker not in src:
+        log.warning("patch_start_sh_source_llm_env: gunicorn marker not found, skipping")
+        return None
+    injection = '\n# changedetect: load LLM API key for the gunicorn process\n    if [ -f /tmp/ufly-llm.env ]; then\n        set -a; source /tmp/ufly-llm.env; set +a\n    fi\n    '
+    return src.replace(marker, injection + marker)
+
+
+register('/webodm/start.sh',
+         'source /tmp/ufly-llm.env',
+         patch_start_sh_source_llm_env)
+
+
 # --- Runner ------------------------------------------------------------
 def main():
     base = '/webodm'

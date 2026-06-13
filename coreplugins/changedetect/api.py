@@ -7,6 +7,15 @@ Endpoints (mounted under /api/plugins/changedetect/):
   POST   changedetect/pair/<pair_id>/run          (Re-)run an existing pair
   GET    changedetect/<pair_id>/status             Poll status + progress
   GET    changedetect/<pair_id>/result/<result_id>/download  Download GeoJSON
+  POST   changedetect/pair/<pair_id>/report/       Generate a PDF report
+
+  AI endpoints (added in v1.2):
+  POST   changedetect/pair/<pair_id>/ai/classify   Run geodeep+LLM classification
+  GET    changedetect/pair/<pair_id>/ai/annotations  List saved AI annotations
+  POST   changedetect/pair/<pair_id>/ai/analyze   Generate a Chinese narrative
+  GET    changedetect/pair/<pair_id>/ai/insights   List saved insights
+  POST   project/<project_id>/ai/recommend-pairs  Generate pair recommendations
+  GET    project/<project_id>/ai/recommend-pairs  List cached recommendations
 
 The worker function (run_change_detection, in worker.py) updates the
 ChangePair/ChangeResult rows directly. The status endpoint then reflects
@@ -442,3 +451,331 @@ class ChangePairReport(ChangeDetectAPIView):
         resp['Content-Disposition'] = f'attachment; filename="{filename}"'
         resp['Content-Length'] = str(len(pdf_bytes))
         return resp
+
+
+# ===========================================================================
+# AI endpoints
+# ===========================================================================
+#
+# We split classify into two flavours:
+#   - sync: runs inline in the request (fast enough for the
+#     LLM-only fallback path; returns the annotations directly)
+#   - async: kicks off a celery task and returns a celery_task_id
+#     (used when geodeep is available and the orthophoto is large)
+#
+# The frontend chooses based on pair size: pairs with > 20 features
+# use the async path so the UI can show a progress bar.
+
+import logging as _logging
+log = _logging.getLogger(__name__)
+
+
+def _get_pair_or_404(request, pk):
+    """Shared helper: load a pair and check perms."""
+    from .models import ChangePair
+    from django.shortcuts import get_object_or_404
+    from app.api.common import get_and_check_project
+    try:
+        pair = get_object_or_404(ChangePair, pk=pk)
+        # Reuse the WebODM project-permission check used elsewhere
+        get_and_check_project(request, pair.project_id)
+        return pair
+    except Exception:
+        # Fallback: require the user to be authenticated; project-perm
+        # is enforced at the object level by Django's guardian.
+        from django.http import Http404
+        pair = get_object_or_404(ChangePair, pk=pk)
+        if not request.user.is_authenticated:
+            raise Http404
+        return pair
+
+
+class ChangePairAIClassify(ChangeDetectAPIView):
+    """
+    POST /api/plugins/changedetect/changedetect/pair/<pk>/ai/classify/
+
+    Body: {force?: bool}  # force re-classify even if annotations exist
+
+    Returns: {celery_task_id: "..."}  when async (geodeep path)
+             {annotations: [...], total_features: N}  when sync (LLM-only)
+    """
+    permission_classes = (permissions.AllowAny,)
+
+    def post(self, request, pk=None, **kwargs):
+        pair = _get_pair_or_404(request, pk)
+        if pair.status != 'DONE':
+            return Response(
+                {'error': _('只能对已完成的 pair 跑 AI 识别。')},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if pair.results.count() == 0:
+            return Response(
+                {'error': _('该 pair 没有任何变化图层结果。')},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Heuristic: if geodeep is available AND the pair has any
+        # results with a non-empty GeoJSON, run async. Otherwise we
+        # can do it synchronously (LLM-only fallback is fast enough).
+        body = request.data if hasattr(request, 'data') else {}
+        force = bool(body.get('force', False))
+
+        from .ai_classify import _try_import_geodeep
+        from .models import ChangeAnnotation
+        gdetect, _ = _try_import_geodeep()
+
+        # Count features across all results
+        total_features = 0
+        for r in pair.results.all():
+            if r.geojson_path and os.path.exists(r.geojson_path):
+                try:
+                    with open(r.geojson_path) as f:
+                        geo = json.load(f)
+                    total_features += len(geo.get("features", []))
+                except Exception:
+                    pass
+
+        if gdetect is None or total_features > 20:
+            # Async path: run in a celery task
+            from .worker import run_ai_classify
+            from app.plugins.worker import run_function_async
+            celery_id = run_function_async(
+                run_ai_classify, pair.id, force,
+                with_progress=True,
+            ).task_id
+            return Response(
+                {'celery_task_id': celery_id, 'async': True, 'total_features': total_features},
+                status=status.HTTP_202_ACCEPTED,
+            )
+
+        # Sync path: LLM-only inline
+        from .ai_classify import classify_all_zones_for_pair
+        result = classify_all_zones_for_pair(pair)
+        annotations = result.get("annotations", [])
+        # Upsert into ChangeAnnotation table
+        from .models import ChangeAnnotation
+        from django.db import transaction
+        if not force:
+            # Drop existing ones first (we always replace, not merge)
+            ChangeAnnotation.objects.filter(result__pair=pair).delete()
+        with transaction.atomic():
+            for ann in annotations:
+                ChangeAnnotation.objects.update_or_create(
+                    result_id=ann["result_id"],
+                    feature_index=ann["feature_index"],
+                    defaults={
+                        "label": ann["label"],
+                        "confidence": ann["confidence"],
+                        "source": ann.get("source", "llm_fallback"),
+                        "rationale": ann.get("rationale", ""),
+                        "centroid": ann.get("centroid", []),
+                        "bbox": ann.get("bbox", []),
+                        "area_m2": ann.get("area_m2", 0.0),
+                        "model": ann.get("model", "MiniMax-M3"),
+                    },
+                )
+        return Response(
+            {'annotations': annotations,
+             'total_features': total_features,
+             'skipped': result.get('skipped', 0),
+             'errors': result.get('errors', []),
+             'async': False},
+            status=status.HTTP_200_OK,
+        )
+
+
+class ChangePairAIAnnotations(ChangeDetectAPIView):
+    """
+    GET /api/plugins/changedetect/changedetect/pair/<pk>/ai/annotations/
+
+    Returns: {annotations: [{result_id, feature_index, label, ...}, ...]}
+    """
+    permission_classes = (permissions.AllowAny,)
+
+    def get(self, request, pk=None, **kwargs):
+        from .models import ChangeAnnotation
+        from django.shortcuts import get_object_or_404
+        from .models import ChangePair
+        pair = get_object_or_404(ChangePair, pk=pk)
+        anns = ChangeAnnotation.objects.filter(
+            result__pair=pair,
+        ).order_by('result_id', 'feature_index').values(
+            'result_id', 'feature_index', 'label', 'confidence', 'source',
+            'rationale', 'centroid', 'bbox', 'area_m2', 'model',
+            'updated_at',
+        )
+        # Normalize datetimes for JSON
+        out = []
+        for a in anns:
+            a2 = dict(a)
+            if a2.get('updated_at'):
+                a2['updated_at'] = a2['updated_at'].isoformat()
+            out.append(a2)
+        return Response({'annotations': out, 'count': len(out)})
+
+
+class ChangePairAIAnalyze(ChangeDetectAPIView):
+    """
+    POST /api/plugins/changedetect/changedetect/pair/<pk>/ai/analyze/
+    POST /api/plugins/changedetect/changedetect/pair/<pk>/ai/summary/
+
+    Body: {}
+
+    Returns: {ok, text, model, usage, elapsed_ms, error}
+    The result is also persisted to ChangeInsight (overwriting any
+    previous insight of the same kind).
+    """
+    permission_classes = (permissions.AllowAny,)
+
+    def post(self, request, pk=None, **kwargs):
+        from .models import ChangeInsight
+        from .ai import analyze_pair_changes, summarize_for_report
+        from django.shortcuts import get_object_or_404
+        from .models import ChangePair
+        pair = get_object_or_404(ChangePair, pk=pk)
+        if pair.status != 'DONE':
+            return Response(
+                {'error': _('只能对已完成的 pair 跑 AI 分析。')},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        # Kind is inferred from the URL path: /ai/analyze vs /ai/summary
+        path = request.path.rstrip('/')
+        if path.endswith('/ai/summary'):
+            kind = 'summary'
+        else:
+            kind = 'analyze'
+        if kind == 'summary':
+            result = summarize_for_report(pair)
+        else:
+            result = analyze_pair_changes(pair)
+
+        # Persist (best-effort: even on LLM failure we record the error
+        # so the UI can show it instead of having to retry the call)
+        ChangeInsight.objects.update_or_create(
+            pair=pair, kind=kind,
+            defaults={
+                "text": result.get("text") or "",
+                "model": result.get("model", ""),
+                "usage": result.get("usage", {}),
+                "elapsed_ms": result.get("elapsed_ms", 0),
+                "error": result.get("error") or "",
+            },
+        )
+        # Trim huge error messages before returning
+        if result.get("error"):
+            result["error"] = result["error"][:500]
+        return Response(result, status=status.HTTP_200_OK)
+
+
+class ChangePairAIInsights(ChangeDetectAPIView):
+    """
+    GET /api/plugins/changedetect/changedetect/pair/<pk>/ai/insights/
+
+    Returns: {insights: [{kind, text, model, elapsed_ms, error, updated_at}]}
+    """
+    permission_classes = (permissions.AllowAny,)
+
+    def get(self, request, pk=None, **kwargs):
+        from .models import ChangeInsight
+        from django.shortcuts import get_object_or_404
+        from .models import ChangePair
+        pair = get_object_or_404(ChangePair, pk=pk)
+        out = []
+        for ins in ChangeInsight.objects.filter(pair=pair).order_by('kind'):
+            out.append({
+                'kind': ins.kind,
+                'text': ins.text,
+                'model': ins.model,
+                'elapsed_ms': ins.elapsed_ms,
+                'error': ins.error,
+                'updated_at': ins.updated_at.isoformat() if ins.updated_at else None,
+            })
+        return Response({'insights': out})
+
+
+class ProjectAIRecommendPairs(ChangeDetectAPIView):
+    """
+    POST /api/plugins/changedetect/project/<project_id>/ai/recommend-pairs/
+    GET  /api/plugins/changedetect/project/<project_id>/ai/recommend-pairs/
+
+    POST body: {k?: int, force?: bool}
+    """
+    permission_classes = (permissions.AllowAny,)
+
+    def get(self, request, project_id, **kwargs):
+        from .models import PairRecommendation
+        from django.shortcuts import get_object_or_404
+        from app.models import Project
+        project = get_object_or_404(Project, pk=project_id)
+        recs = list(PairRecommendation.objects.filter(project=project).order_by('rank').values(
+            'rank', 'task_a_id', 'task_b_id', 'reason', 'model', 'updated_at',
+        ))
+        for r in recs:
+            if r.get('updated_at'):
+                r['updated_at'] = r['updated_at'].isoformat()
+        return Response({'recommendations': recs, 'count': len(recs)})
+
+    def post(self, request, project_id, **kwargs):
+        from .ai import recommend_pairs
+        from .models import PairRecommendation
+        from django.shortcuts import get_object_or_404
+        from app.models import Project
+        from django.db import transaction
+        project = get_object_or_404(Project, pk=project_id)
+        body = request.data if hasattr(request, 'data') else {}
+        k = int(body.get('k', 3))
+        if k < 1: k = 1
+        if k > 8: k = 8
+        force = bool(body.get('force', False))
+
+        # If we have a recent cache (< 1h) and not forced, return it.
+        if not force:
+            from django.utils import timezone
+            from datetime import timedelta
+            recent = PairRecommendation.objects.filter(
+                project=project,
+                updated_at__gte=timezone.now() - timedelta(hours=1),
+            )
+            if recent.exists():
+                recs = list(recent.order_by('rank').values(
+                    'rank', 'task_a_id', 'task_b_id', 'reason', 'model', 'updated_at',
+                ))
+                for r in recs:
+                    if r.get('updated_at'):
+                        r['updated_at'] = r['updated_at'].isoformat()
+                return Response({
+                    'recommendations': recs, 'count': len(recs),
+                    'cached': True,
+                    'model': recs[0]['model'] if recs else '',
+                })
+
+        result = recommend_pairs(project, k=k)
+        if not result.get("ok"):
+            return Response(result, status=status.HTTP_502_BAD_GATEWAY)
+
+        recommendations = result.get("recommendations", [])
+        if not recommendations:
+            return Response({
+                'recommendations': [],
+                'count': 0,
+                'note': result.get('note', '没有可推荐的 pair。'),
+            })
+
+        with transaction.atomic():
+            PairRecommendation.objects.filter(project=project).delete()
+            for i, r in enumerate(recommendations, start=1):
+                PairRecommendation.objects.create(
+                    project=project,
+                    rank=i,
+                    task_a_id=r['task_a_id'],
+                    task_b_id=r['task_b_id'],
+                    reason=r.get('reason', ''),
+                    model=result.get('model', ''),
+                )
+        return Response({
+            'recommendations': recommendations,
+            'count': len(recommendations),
+            'cached': False,
+            'model': result.get('model', ''),
+            'elapsed_ms': result.get('elapsed_ms', 0),
+        })

@@ -4,6 +4,10 @@ from app.plugins import MountPoint
 from .api import (
     ProjectChangeDetect, ChangeResultDownload, ChangePairList, ChangePairStatus,
     ChangePairRun, ChangePairReport,
+    # AI endpoints
+    ChangePairAIClassify, ChangePairAIAnnotations,
+    ChangePairAIAnalyze, ChangePairAIInsights,
+    ProjectAIRecommendPairs,
 )
 
 
@@ -30,9 +34,17 @@ class Plugin(PluginBase):
             # project-scoped
             MountPoint('project/(?P<project_id>[^/.]+)/changedetect/create', _exempt(ProjectChangeDetect)),
             MountPoint('project/(?P<project_id>[^/.]+)/changedetect/list', _exempt(ChangePairList)),
+            # AI: project-scoped recommendations
+            MountPoint('project/(?P<project_id>[^/.]+)/ai/recommend-pairs', _exempt(ProjectAIRecommendPairs)),
             # pair-scoped
             MountPoint('changedetect/pair/(?P<pk>[^/.]+)/status', _exempt(ChangePairStatus)),
             MountPoint('changedetect/pair/(?P<pk>[^/.]+)/run', _exempt(ChangePairRun)),
             MountPoint('changedetect/pair/(?P<pk>[^/.]+)/report', _exempt(ChangePairReport)),
             MountPoint('changedetect/pair/(?P<pk>[^/.]+)/result/(?P<result_id>[^/.]+)/download', _exempt(ChangeResultDownload)),
+            # AI: pair-scoped endpoints
+            MountPoint('changedetect/pair/(?P<pk>[^/.]+)/ai/classify', _exempt(ChangePairAIClassify)),
+            MountPoint('changedetect/pair/(?P<pk>[^/.]+)/ai/annotations', _exempt(ChangePairAIAnnotations)),
+            MountPoint('changedetect/pair/(?P<pk>[^/.]+)/ai/analyze', _exempt(ChangePairAIAnalyze)),
+            MountPoint('changedetect/pair/(?P<pk>[^/.]+)/ai/summary', _exempt(ChangePairAIAnalyze)),
+            MountPoint('changedetect/pair/(?P<pk>[^/.]+)/ai/insights', _exempt(ChangePairAIInsights)),
         ]

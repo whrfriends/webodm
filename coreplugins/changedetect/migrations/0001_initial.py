@@ -14,7 +14,7 @@ class Migration(migrations.Migration):
     initial = True
 
     dependencies = [
-        ('app', '0052_plugin_access'),
+        ('app', '0051_init_basemaps'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 

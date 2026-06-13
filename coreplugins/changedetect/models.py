@@ -172,3 +172,178 @@ class ChangeResult(models.Model):
 
     def __str__(self):
         return f"ChangeResult({self.pair_id}, {self.layer_type})"
+
+
+class ChangeAnnotation(models.Model):
+    """
+    AI-generated label for a single change-detection feature.
+
+    One row per (result, feature_index) tuple. We re-run the AI
+    classification whenever the user clicks "AI 识别", and we
+    overwrite the existing rows (same key) so we don't accumulate
+    stale labels. The (result, feature_index) key is stable because
+    the change-detection worker always emits features in the same
+    order (sorted by descending area).
+
+    `centroid` / `bbox` are stored as denormalised columns (in
+    addition to the LABEL_COLORS lookup) so we can colour the map
+    overlay without joining back to the GeoJSON file.
+    """
+
+    # Stable id (result, feature_index). We don't use Django's default
+    # bigint PK here because the API client needs to upsert by key.
+    result = models.ForeignKey(
+        'ChangeResult',
+        on_delete=models.CASCADE,
+        related_name='ai_annotations',
+    )
+    feature_index = models.PositiveIntegerField(
+        help_text="Index of the feature inside the result's GeoJSON "
+                  "FeatureCollection (sorted by area, descending).",
+    )
+    label = models.CharField(
+        max_length=32,
+        help_text="One of ALLOWED_LABELS in ai_classify.py.",
+    )
+    confidence = models.FloatField(
+        default=0.0,
+        help_text="0.0-1.0 confidence reported by the classifier.",
+    )
+    source = models.CharField(
+        max_length=32,
+        default="llm_fallback",
+        help_text="geodeep_aerovision / geodeep_cars / llm_fallback",
+    )
+    rationale = models.TextField(
+        blank=True, default="",
+        help_text="Short human-readable Chinese reason from the model.",
+    )
+    centroid = JSONField(
+        default=list, blank=True,
+        help_text="[lng, lat] of the feature's geometric centroid.",
+    )
+    bbox = JSONField(
+        default=list, blank=True,
+        help_text="[minx, miny, maxx, maxy] of the feature's bbox.",
+    )
+    area_m2 = models.FloatField(
+        default=0.0,
+        help_text="Area in m² (denormalised so the API can list without re-reading GeoJSON).",
+    )
+    model = models.CharField(
+        max_length=64, default="",
+        help_text="Model id used (e.g. 'aerovision' or 'MiniMax-M3').",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = "changedetect"
+        # One annotation per (result, feature)
+        unique_together = [("result", "feature_index")]
+        indexes = [
+            models.Index(fields=["result", "label"]),
+        ]
+        ordering = ["result_id", "feature_index"]
+
+    def __str__(self):
+        return f"ChangeAnnotation({self.result_id}#{self.feature_index}={self.label})"
+
+
+class ChangeInsight(models.Model):
+    """
+    LLM-generated narrative for a finished pair.
+
+    Two flavours, distinguished by the `kind` field:
+      - 'analyze': the long Chinese interpretation (analyze_pair_changes)
+      - 'summary': the ≤100-字 report summary (summarize_for_report)
+    Both are keyed on the pair so we can show the latest insight
+    alongside the pair list, and re-running the LLM simply overwrites.
+    """
+
+    KIND_CHOICES = [
+        ("analyze", "变化原因解读"),
+        ("summary", "报告摘要"),
+    ]
+    pair = models.ForeignKey(
+        'ChangePair',
+        on_delete=models.CASCADE,
+        related_name='ai_insights',
+    )
+    kind = models.CharField(max_length=16, choices=KIND_CHOICES, default="analyze")
+    text = models.TextField(
+        help_text="LLM-generated Chinese text.",
+    )
+    model = models.CharField(
+        max_length=64, default="",
+        help_text="Model id that produced this insight (MiniMax-M3 by default).",
+    )
+    usage = JSONField(
+        default=dict, blank=True,
+        help_text="Token usage stats from the LLM response.",
+    )
+    elapsed_ms = models.IntegerField(
+        default=0,
+        help_text="Round-trip time to the LLM gateway.",
+    )
+    error = models.TextField(
+        blank=True, default="",
+        help_text="If the LLM call failed, the error string. Otherwise empty.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = "changedetect"
+        unique_together = [("pair", "kind")]
+        indexes = [
+            models.Index(fields=["pair", "kind"]),
+        ]
+        ordering = ["pair_id", "kind"]
+
+    def __str__(self):
+        return f"ChangeInsight(pair={self.pair_id}, kind={self.kind})"
+
+
+class PairRecommendation(models.Model):
+    """
+    Cached LLM-suggested pair combinations for a project. The cache
+    lets the project map load recommendations instantly (no LLM call
+    on every page open) while still being refreshed when the user
+    clicks "AI 推荐".
+
+    The recommended (task_a, task_b) IDs are stored as plain UUID
+    strings to avoid a hard FK to app.Task (which can be deleted).
+    """
+
+    project = models.ForeignKey(
+        'app.Project',
+        on_delete=models.CASCADE,
+        related_name='cd_recommendations',
+    )
+    rank = models.PositiveSmallIntegerField(
+        help_text="1 = best, 2 = next, etc.",
+    )
+    task_a_id = models.CharField(
+        max_length=64,
+        help_text="Task id (UUID string) of the earlier task.",
+    )
+    task_b_id = models.CharField(
+        max_length=64,
+        help_text="Task id of the later task.",
+    )
+    reason = models.TextField(
+        blank=True, default="",
+        help_text="1-2 sentence Chinese justification from the LLM.",
+    )
+    model = models.CharField(max_length=64, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = "changedetect"
+        unique_together = [("project", "rank")]
+        ordering = ["project_id", "rank"]
+
+    def __str__(self):
+        return f"PairRecommendation(project={self.project_id}, rank={self.rank})"

@@ -155,6 +155,16 @@ else
     if [ -f /webodm/coreplugins/changedetect/scripts/ufly_patches.py ]; then
         /webodm/venv/bin/python /webodm/coreplugins/changedetect/scripts/ufly_patches.py || echo "ufly_patches failed (non-fatal)"
     fi
+    # Source LLM API key (written by ufly_patches.py from host ~/.hermes/.env)
+    # so the changedetect AI endpoints (ai.py) can reach the LLM gateway.
+    if [ -f /tmp/ufly-llm.env ]; then
+        set -a
+        . /tmp/ufly-llm.env
+        set +a
+        echo "[start.sh] sourced /tmp/ufly-llm.env ($(wc -l < /tmp/ufly-llm.env) vars)"
+    else
+        echo "[start.sh] no /tmp/ufly-llm.env — AI endpoints will return a clear error"
+    fi
     gunicorn webodm.wsgi --bind unix:/tmp/gunicorn.sock --timeout 300000 --max-requests 5000 --workers $WEB_CONCURRENCY --preload
 fi
 

@@ -138,6 +138,25 @@ def _safe_decode_png(b64_str):
         return None
 
 
+def _format_ai_text(text):
+    """
+    Convert LLM Chinese output to safe reportlab markup: replace
+    newlines with <br/>, escape any stray XML chars. The LLM usually
+    returns well-formed prose but occasionally emits bullet points
+    or stray angle brackets, and reportlab's <Paragraph> will throw
+    a hard error on unescaped markup.
+    """
+    if not text:
+        return ""
+    import html as _html
+    # Escape < > &
+    safe = _html.escape(text, quote=False)
+    # Convert newlines to <br/> tags so multi-paragraph output reads
+    # naturally in the PDF
+    safe = safe.replace("\n\n", "<br/><br/>").replace("\n", "<br/>")
+    return safe
+
+
 # --- Main entry point ---------------------------------------------------
 def build_report(pair, project, screenshot_b64=None, map_b64=None,
                  style_b64=None, title_suffix=""):
@@ -216,7 +235,55 @@ def build_report(pair, project, screenshot_b64=None, map_b64=None,
         ("BOTTOMPADDING", (0,0), (-1,-1), 6),
     ]))
     story.append(summary_table)
-    story.append(PageBreak())
+
+    # --- AI 摘要 (optional) -----------------------------------------
+    # Only show this page if the user has run "AI 分析" at some point
+    # and we have a saved ChangeInsight. We never block the report
+    # generation on an LLM call here — that would make the endpoint
+    # 30+ s and could fail if the gateway is flaky. Instead the user
+    # explicitly clicks the AI buttons to populate the insight, and
+    # the report just renders whatever's already on disk.
+    try:
+        from .models import ChangeInsight
+        summary = ChangeInsight.objects.filter(pair=pair, kind='summary').first()
+        analyze = ChangeInsight.objects.filter(pair=pair, kind='analyze').first()
+    except Exception:
+        summary = analyze = None
+
+    if summary or analyze:
+        story.append(PageBreak())
+        story.append(Paragraph("AI 智能分析", styles["Heading2"]))
+        story.append(Spacer(1, 0.3*cm))
+        if summary and summary.text and not summary.error:
+            story.append(Paragraph("<b>📋 报告摘要</b>", styles["Normal"]))
+            story.append(Spacer(1, 0.2*cm))
+            story.append(Paragraph(_format_ai_text(summary.text), styles["Normal"]))
+            story.append(Spacer(1, 0.3*cm))
+        elif summary and summary.error:
+            story.append(Paragraph(
+                f"<i>摘要生成失败: {summary.error[:150]}</i>",
+                styles["Italic"]))
+            story.append(Spacer(1, 0.3*cm))
+        if analyze and analyze.text and not analyze.error:
+            story.append(Paragraph("<b>🔍 变化原因解读</b>", styles["Normal"]))
+            story.append(Spacer(1, 0.2*cm))
+            story.append(Paragraph(_format_ai_text(analyze.text), styles["Normal"]))
+            if analyze.model:
+                story.append(Spacer(1, 0.2*cm))
+                story.append(Paragraph(
+                    f"<font size=8 color='#7f8c8d'>"
+                    f"由 {analyze.model} 生成 · {analyze.elapsed_ms} ms"
+                    f"</font>", styles["Normal"]))
+        elif analyze and analyze.error:
+            story.append(Paragraph(
+                f"<i>解读生成失败: {analyze.error[:150]}</i>",
+                styles["Italic"]))
+        if not (summary and summary.text and not summary.error) and not (analyze and analyze.text and not analyze.error):
+            # Both failed or both empty: leave a hint
+            story.append(Paragraph(
+                "<i>（点击 UI 上的 \"AI 分析\" 按钮即可调用 LLM 重新生成。）</i>",
+                styles["Italic"]))
+        story.append(PageBreak())
 
     # --- Page 2: Pair metadata + screenshot ---
     story.append(Paragraph("任务信息", styles["Heading2"]))
@@ -288,17 +355,47 @@ def build_report(pair, project, screenshot_b64=None, map_b64=None,
     if pair.results.count() == 0:
         story.append(Paragraph("本 pair 无 result。", styles["Normal"]))
     else:
+        # Check whether any of this pair's results have AI annotations
+        # (we only add the "AI 标签分布" column if at least one does)
+        try:
+            from .models import ChangeAnnotation
+            from .ai_classify import LABEL_CN
+            has_ai = ChangeAnnotation.objects.filter(result__pair=pair).exists()
+        except Exception:
+            has_ai = False
+
         data = [["#", "图层类型", "变化面积", "Polygon 数", "GeoJSON 文件"]]
+        if has_ai:
+            data[0].append("AI 标签分布")
         for r in pair.results.all():
             stats = r.stats or {}
-            data.append([
+            row = [
                 str(r.id),
                 r.layer_type or "-",
                 _fmt_area(stats.get("total_area_m2")),
                 str(stats.get("polygon_count", 0)),
                 (os.path.basename(r.geojson_path) if r.geojson_path else "-")[:30],
-            ])
-        tbl = Table(data, colWidths=[1.2*cm, 3*cm, 3*cm, 2.5*cm, 7*cm])
+            ]
+            if has_ai:
+                # Build a quick label distribution for this result
+                anns = ChangeAnnotation.objects.filter(result=r)
+                counts = {}
+                for a in anns:
+                    counts[a.label] = counts.get(a.label, 0) + 1
+                if counts:
+                    # Top 3 by count, comma-separated
+                    parts = []
+                    for label, n in sorted(counts.items(), key=lambda x: -x[1])[:3]:
+                        cn = LABEL_CN.get(label, label)
+                        parts.append(f"{cn} {n}")
+                    row.append(", ".join(parts))
+                else:
+                    row.append("-")
+            data.append(row)
+        col_widths = [1.2*cm, 3*cm, 3*cm, 2.5*cm, 7*cm]
+        if has_ai:
+            col_widths.append(4*cm)
+        tbl = Table(data, colWidths=col_widths)
         tbl.setStyle(TableStyle([
             ("FONT", (0,0), (-1,-1), _CJK_FONT_NAME if _CJK_FONT_REGISTERED else "Helvetica", 9),
             ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#34495e")),

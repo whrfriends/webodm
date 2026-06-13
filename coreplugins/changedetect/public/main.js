@@ -106,6 +106,41 @@ function fetchJSON(url, opts, raw){
     });
 }
 
+// Generic info modal. Used for "show saved AI insight", "show error",
+// etc. — a small, self-contained Bootstrap dialog with customisable
+// title, body HTML, and footer buttons.  Separate from the main
+// `cd-modal` (which hosts the T1/T2 form) so it can be opened from
+// inside the table or after the form is closed.
+function showCDModal(title, bodyHtml, footerButtons){
+    if ($('#cd-modal-info').length === 0){
+        $('body').append([
+            '<div class="modal fade" id="cd-modal-info" tabindex="-1" role="dialog" style="z-index:11000;">',
+            '  <div class="modal-dialog modal-lg" role="document">',
+            '    <div class="modal-content">',
+            '      <div class="modal-header"><button type="button" class="close" data-dismiss="modal">&times;</button>',
+            '        <h4 class="modal-title"></h4></div>',
+            '      <div class="modal-body"></div>',
+            '      <div class="modal-footer"></div>',
+            '    </div>',
+            '  </div>',
+            '</div>'
+        ].join('\n'));
+    }
+    var $m = $('#cd-modal-info');
+    $m.find('.modal-title').text(title || '');
+    $m.find('.modal-body').html(bodyHtml || '');
+    var $f = $m.find('.modal-footer').empty();
+    (footerButtons || [{label: '关闭', cls: 'btn-default', close: true}]).forEach(function(b){
+        var $b = $('<button type="button" class="btn ' + (b.cls || 'btn-default') + '">' + (b.label || 'OK') + '</button>');
+        if (b.close !== false){
+            $b.attr('data-dismiss', 'modal');
+        }
+        $b.on('click', b.onClick || function(){});
+        $f.append($b);
+    });
+    $m.modal('show');
+}
+
 function openChangeDetectModal(projectId){
     // Bootstrap modal markup
     if ($('#cd-modal').length === 0){
@@ -116,6 +151,14 @@ function openChangeDetectModal(projectId){
             '      <div class="modal-header"><button type="button" class="close" data-dismiss="modal">&times;</button>',
             '        <h4 class="modal-title">变化检测</h4></div>',
             '      <div class="modal-body">',
+            // AI Recommendations block — hidden until the user clicks
+            // "AI 推荐 pair". When the LLM responds we render a small
+            // list of (task_a, task_b, reason) cards the user can click
+            // to pre-fill the T1/T2 selectors below.
+            '        <div class="cd-modal-ai-recs" id="cd-ai-recs" style="display:none; margin-bottom: 12px; padding: 10px; background: #fef9e7; border-left: 3px solid #f39c12; border-radius: 3px;">',
+            '          <strong>🤖 AI 推荐 pair</strong>',
+            '          <div id="cd-ai-recs-list" style="margin-top: 6px;"></div>',
+            '        </div>',
             '        <div class="cd-modal-step" id="cd-step-config">',
             '          <div class="form-group"><label>基准任务 (T1)</label><select class="form-control" id="cd-t1"></select></div>',
             '          <div class="form-group"><label>对比任务 (T2)</label><select class="form-control" id="cd-t2"></select></div>',
@@ -166,9 +209,41 @@ function openChangeDetectModal(projectId){
     $('#cd-step-list').show();
     $('#cd-btn-submit').show().prop('disabled', false).text('提交');
     $('#cd-btn-view').hide();
+    // "AI 推荐" 按钮注入到 modal footer (提交按钮旁)
+    if ($('#cd-btn-ai-recs').length === 0){
+        $('#cd-btn-submit').after(
+            ' <button type="button" class="btn btn-warning" id="cd-btn-ai-recs" title="调用 LLM 推荐最值得做变化检测的 pair 组合">🤖 AI 推荐</button>'
+        );
+    }
     // load pair history
     refreshPairsTable(projectId);
+    // 同时加载已缓存的 AI 推荐
+    refreshAIRecs(projectId);
     $modal.modal('show');
+}
+
+function refreshAIRecs(projectId){
+    fetchJSON('/api/plugins/changedetect/project/' + projectId + '/ai/recommend-pairs').then(function(json){
+        var recs = (json && json.recommendations) || [];
+        if (recs.length === 0){
+            $('#cd-ai-recs').hide();
+            return;
+        }
+        // Build a compact list. Each entry: rank + reason + click-to-fill.
+        var html = recs.map(function(r){
+            var a = (r.task_a_id || '').slice(0, 8);
+            var b = (r.task_b_id || '').slice(0, 8);
+            return '<div class="cd-ai-rec-item" data-a="' + r.task_a_id + '" data-b="' + r.task_b_id + '" style="padding: 4px 0; cursor: pointer;">' +
+                '<span class="label label-warning" style="margin-right:6px">#' + r.rank + '</span>' +
+                '<code>' + a + '… → ' + b + '…</code> ' +
+                '<small class="text-muted">' + $('<div>').text(r.reason || '').html() + '</small>' +
+                '</div>';
+        }).join('');
+        $('#cd-ai-recs-list').html(html);
+        $('#cd-ai-recs').show();
+    }).catch(function(){
+        $('#cd-ai-recs').hide();
+    });
 }
 
 function refreshPairsTable(projectId){
@@ -183,38 +258,89 @@ function refreshPairsTable(projectId){
             $tb.append('<tr><td colspan="5" class="text-muted">暂无 pair</td></tr>');
             return;
         }
-        pairs.forEach(function(p){
-            var statusBadge = {
-                'QUEUED':  '<span class="label label-default">排队</span>',
-                'RUNNING': '<span class="label label-info">运行中</span>',
-                'DONE':    '<span class="label label-success">完成</span>',
-                'FAILED':  '<span class="label label-danger">失败</span>'
-            }[p.status] || '<span class="label label-default">' + (p.status || '?') + '</span>';
-            var resultCell = '';
-            if (p.status === 'DONE' && p.results && p.results.length){
-                p.results.forEach(function(r){
-                    resultCell += '<a class="btn btn-xs btn-default cd-dl-btn" data-pid="' + p.id + '" data-rid="' + r.id + '">' + (r.kind || 'json') + '</a> ';
+        // For each DONE pair, also fetch AI insights so the row can show
+        // "📝 解读 (12s)" — that way an analysis done in a previous modal
+        // session isn't lost when the user closes & reopens the dialog.
+        // We fan out in parallel and update the row once each comes back.
+        var insightCache = {};  // pid -> [{kind, text, ...}]
+        var inflight = pairs.filter(function(p){ return p.status === 'DONE'; });
+        var done = inflight.length;
+        if (done === 0) {
+            renderPairRows(pairs, insightCache);
+            return;
+        }
+        inflight.forEach(function(p){
+            fetchJSON('/api/plugins/changedetect/changedetect/pair/' + p.id + '/ai/insights')
+                .then(function(j){
+                    insightCache[p.id] = j && j.insights ? j.insights : [];
+                })
+                .catch(function(){
+                    insightCache[p.id] = [];
+                })
+                .then(function(){
+                    done--;
+                    if (done === 0) renderPairRows(pairs, insightCache);
                 });
-            }
-            var viewBtn = p.status === 'DONE'
-                ? '<button class="btn btn-xs btn-primary cd-view-btn" data-pid="' + p.id + '" data-project="' + projectId + '">查看</button>'
-                : '';
-            var reportBtn = p.status === 'DONE'
-                ? ' <button class="btn btn-xs btn-success cd-report-btn" data-pid="' + p.id + '" data-project="' + projectId + '" data-name="' + (p.name || ('pair_' + p.id)) + '">下载报告</button>'
-                : '';
-            $tb.append(
-                '<tr>' +
-                '<td>' + p.id + '</td>' +
-                '<td><code>' + $('<div>').text((p.task_before_name || p.task_a || '').slice(0, 18)).html() + '</code> → ' +
-                '<code>' + $('<div>').text((p.task_after_name || p.task_b || '').slice(0, 18)).html() + '</code></td>' +
-                '<td>' + statusBadge + '</td>' +
-                '<td>' + resultCell + '</td>' +
-                '<td>' + viewBtn + reportBtn + '</td>' +
-                '</tr>'
-            );
         });
     }).catch(function(e){
         $('#cd-pairs-tbody').html('<tr><td colspan="5" class="text-danger">列表加载失败: ' + e.message + '</td></tr>');
+    });
+}
+
+function renderPairRows(pairs, insightCache){
+    var $tb = $('#cd-pairs-tbody');
+    pairs.forEach(function(p){
+        var statusBadge = {
+            'QUEUED':  '<span class="label label-default">排队</span>',
+            'RUNNING': '<span class="label label-info">运行中</span>',
+            'DONE':    '<span class="label label-success">完成</span>',
+            'FAILED':  '<span class="label label-danger">失败</span>'
+        }[p.status] || '<span class="label label-default">' + (p.status || '?') + '</span>';
+        var resultCell = '';
+        if (p.status === 'DONE' && p.results && p.results.length){
+            p.results.forEach(function(r){
+                resultCell += '<a class="btn btn-xs btn-default cd-dl-btn" data-pid="' + p.id + '" data-rid="' + r.id + '">' + (r.kind || 'json') + '</a> ';
+            });
+        }
+        // AI badge: shows when this pair has at least one saved insight,
+        // so a previously-generated analysis isn't lost across modal
+        // close/reopen. Click the badge to re-open the insight.
+        var insights = insightCache[p.id] || [];
+        var insightBadge = '';
+        if (p.status === 'DONE' && insights.length){
+            var analyze = insights.filter(function(x){ return x.kind === 'analyze' && x.text; })[0];
+            if (analyze){
+                var s = Math.round((analyze.elapsed_ms || 0) / 1000);
+                insightBadge = ' <a class="label label-success cd-ai-show-insight" ' +
+                    'data-pid="' + p.id + '" data-kind="analyze" ' +
+                    'title="已生成 AI 解读，点此查看">' +
+                    '📝 解读 ' + (s > 0 ? '(' + s + 's)' : '') + '</a>';
+            }
+        }
+        var viewBtn = p.status === 'DONE'
+            ? '<button class="btn btn-xs btn-primary cd-view-btn" data-pid="' + p.id + '" data-project="' + projectId + '">查看</button>'
+            : '';
+        var reportBtn = p.status === 'DONE'
+            ? ' <button class="btn btn-xs btn-success cd-report-btn" data-pid="' + p.id + '" data-project="' + projectId + '" data-name="' + (p.name || ('pair_' + p.id)) + '">下载报告</button>'
+            : '';
+        // AI buttons: classify zones (geodeep + LLM) and produce a
+        // Chinese narrative. The analyze handler now first checks the
+        // /ai/insights cache — if an insight already exists we re-open
+        // it without re-spending LLM tokens.
+        var aiBtns = p.status === 'DONE'
+            ? ' <button class="btn btn-xs btn-warning cd-ai-classify-btn" data-pid="' + p.id + '" data-project="' + projectId + '" title="AI 视觉识别每个变化区域是什么">AI 识别</button>' +
+              ' <button class="btn btn-xs btn-info cd-ai-analyze-btn" data-pid="' + p.id + '" data-project="' + projectId + '" title="LLM 生成变化原因中文解读（已生成会直接显示）">AI 分析</button>'
+            : '';
+        $tb.append(
+            '<tr>' +
+            '<td>' + p.id + '</td>' +
+            '<td><code>' + $('<div>').text((p.task_before_name || p.task_a || '').slice(0, 18)).html() + '</code> → ' +
+            '<code>' + $('<div>').text((p.task_after_name || p.task_b || '').slice(0, 18)).html() + '</code></td>' +
+            '<td>' + statusBadge + '</td>' +
+            '<td>' + resultCell + insightBadge + '</td>' +
+            '<td style="white-space:nowrap">' + viewBtn + reportBtn + aiBtns + '</td>' +
+            '</tr>'
+        );
     });
 }
 
@@ -338,6 +464,248 @@ $(document).on('click', '.cd-dl-btn', function(){
     var rid = $(this).data('rid');
     window.location.href = '/api/plugins/changedetect/changedetect/pair/' + pid + '/result/' + rid + '/download';
 });
+
+// AI 推荐 pair — calls LLM to suggest the most useful pair
+// combinations, then re-renders the #cd-ai-recs block with the
+// results. Subsequent calls within 1 h are served from cache unless
+// the user passes ?force=1 (we don't surface that for now).
+$(document).on('click', '#cd-btn-ai-recs', function(){
+    var $btn = $(this).prop('disabled', true).text('🤖 AI 推理中…');
+    var projectId = $(this).data('project') || $('#cd-btn-ai-recs').closest('.modal').data('project-id');
+    if (!projectId){
+        // Fallback: pull from URL (we're inside a project)
+        var m = (location.pathname || '').match(/\/project\/(\d+)/);
+        if (m) projectId = m[1];
+    }
+    if (!projectId){ $btn.prop('disabled', false).text('🤖 AI 推荐'); return; }
+    fetch('/api/plugins/changedetect/project/' + projectId + '/ai/recommend-pairs/', {
+        method: 'POST', credentials: 'same-origin',
+        headers: {
+            'Content-Type': 'application/json', 'Accept': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest', 'X-CSRFToken': getCSRFToken(),
+        },
+        body: JSON.stringify({k: 3}),
+    }).then(function(r){ return r.json().then(function(j){ return {ok: r.ok, j: j}; }); })
+      .then(function(res){
+          if (!res.ok){
+              showToast('error', 'AI 推荐失败: ' + (res.j.error || res.j.detail || '?'));
+              return;
+          }
+          var recs = res.j.recommendations || [];
+          if (recs.length === 0){
+              showToast('warn', res.j.note || '没有可推荐的 pair');
+              $('#cd-ai-recs').hide();
+              return;
+          }
+          showToast('success', 'AI 推荐 ' + recs.length + ' 对 pair');
+          refreshAIRecs(projectId);
+      }).catch(function(err){
+          showToast('error', 'AI 推荐异常: ' + (err && err.message || err));
+      }).then(function(){
+          $btn.prop('disabled', false).text('🤖 AI 推荐');
+      });
+});
+
+// Click on a recommendation → pre-fill the T1/T2 selectors and
+// highlight the row. The user still has to click "提交" to actually
+// kick off the change-detection worker.
+$(document).on('click', '.cd-ai-rec-item', function(){
+    var a = $(this).data('a'), b = $(this).data('b');
+    if (a) $('#cd-t1').val(a);
+    if (b) $('#cd-t2').val(b);
+    showToast('info', '已填入 AI 推荐的任务对，请点 "提交" 开始检测');
+    $(this).css('background', '#d5f5e3').delay(800).queue(function(n){ $(this).css('background', ''); n(); });
+});
+
+// AI 识别 — POST /ai/classify, get back annotations (sync) or a
+// celery_task_id (async). We poll the status endpoint if async.
+$(document).on('click', '.cd-ai-classify-btn', function(){
+    var $btn = $(this);
+    var pid = $btn.data('pid');
+    if (!pid) return;
+    $btn.prop('disabled', true).text('AI 识别中…');
+    fetch('/api/plugins/changedetect/changedetect/pair/' + pid + '/ai/classify/', {
+        method: 'POST', credentials: 'same-origin',
+        headers: {
+            'Content-Type': 'application/json', 'Accept': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest', 'X-CSRFToken': getCSRFToken(),
+        },
+        body: JSON.stringify({}),
+    }).then(function(r){ return r.json().then(function(j){ return {ok: r.ok, j: j}; }); })
+      .then(function(res){
+          if (!res.ok){
+              showToast('error', 'AI 识别失败: ' + (res.j.error || '?'));
+              return;
+          }
+          if (res.j.async && res.j.celery_task_id){
+              showToast('info', 'AI 识别已在后台启动（任务多），稍候刷新页面');
+              pollCeleryStatus(res.j.celery_task_id, 'AI 识别', function(){
+                  $btn.prop('disabled', false).text('AI 识别');
+                  showToast('success', 'AI 识别完成');
+              });
+          } else {
+              showToast('success', 'AI 识别完成，共 ' + (res.j.annotations || []).length + ' 个区域');
+              $btn.prop('disabled', false).text('AI 识别');
+          }
+      }).catch(function(err){
+          showToast('error', 'AI 识别异常: ' + (err && err.message || err));
+          $btn.prop('disabled', false).text('AI 识别');
+      });
+});
+
+// AI 分析 — generate Chinese narrative. Always returns synchronously
+// (the LLM call is a few seconds, but we're OK waiting inline).
+//
+// First checks the /ai/insights cache: if an "analyze" insight already
+// exists we re-open it without re-spending LLM tokens. This way an
+// analysis done in a previous modal session isn't lost when the user
+// closes & reopens the dialog.
+$(document).on('click', '.cd-ai-analyze-btn', function(){
+    var $btn = $(this);
+    var pid = $btn.data('pid');
+    if (!pid) return;
+
+    // Find the row so we can re-enable the button even if the modal
+    // is closed while the request is in flight.
+    var $row = $btn.closest('tr');
+
+    function showInsight(text, kind, model, elapsedMs){
+        var ttl = kind === 'summary' ? 'AI 摘要' : 'AI 解读';
+        var md = (elapsedMs ? '（耗时 ' + Math.round(elapsedMs/1000) + 's · ' + (model || 'LLM') + '）' : '');
+        var body = $('<div>').text(text || '(空)').html().replace(/\n/g, '<br>');
+        showCDModal(
+            ttl + ' ' + md,
+            '<div style="white-space:normal;line-height:1.7;font-size:14px;">' + body + '</div>',
+            [{label: '关闭', cls: 'btn-default', close: true}]
+        );
+    }
+
+    // 1) Try cache first
+    fetchJSON('/api/plugins/changedetect/changedetect/pair/' + pid + '/ai/insights').then(function(j){
+        var existing = insights.filter(function(x){ return x.kind === 'analyze'; })[0];
+        if (existing && existing.text && !existing.error){
+            showInsight(existing.text, 'analyze', existing.model, existing.elapsed_ms);
+            return;
+        }
+        // 2) No cache — run the LLM
+        $btn.prop('disabled', true).text('AI 分析中…');
+        return fetch('/api/plugins/changedetect/changedetect/pair/' + pid + '/ai/analyze/', {
+            method: 'POST', credentials: 'same-origin',
+            headers: {
+                'Content-Type': 'application/json', 'Accept': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest', 'X-CSRFToken': getCSRFToken(),
+            },
+            body: JSON.stringify({}),
+        }).then(function(r){ return r.json().then(function(j){ return {ok: r.ok, j: j}; }); })
+          .then(function(res){
+              // Re-resolve $btn because the row may have been re-rendered
+              // while we were waiting.
+              var $btn2 = $('.cd-ai-analyze-btn[data-pid="' + pid + '"]');
+              if (res.ok && res.j.text){
+                  showToast('success', 'AI 解读已生成 (耗时 ' + (res.j.elapsed_ms || 0) + ' ms)');
+                  // If the main modal is still open, show the result inline.
+                  // If the user already closed it, the saved insight will
+                  // surface via the "📝 解读" badge on next open.
+                  if ($('#cd-modal').is(':visible')){
+                      showInsight(res.j.text, 'analyze', res.j.model, res.j.elapsed_ms);
+                  } else {
+                      // Append a "查看" affordance to the toast so the
+                      // user can re-open the insight without hunting
+                      // for the row in the (closed) modal.
+                      var $toast = $('#cd-toast-container .cd-toast').last();
+                      $toast.append(' <a href="#" class="cd-toast-view-insight" data-pid="' + pid + '" style="color:#fff;text-decoration:underline;margin-left:8px;">查看</a>');
+                  }
+              } else {
+                  showToast('error', 'AI 分析失败: ' + (res.j.error || '?'));
+              }
+              $btn2.prop('disabled', false).text('AI 分析');
+              // Refresh the row so the "📝 解读" badge shows up.
+              $btn2.closest('tr').find('.cd-ai-show-insight').remove();
+          }).catch(function(err){
+              var $btn2 = $('.cd-ai-analyze-btn[data-pid="' + pid + '"]');
+              showToast('error', 'AI 分析异常: ' + (err && err.message || err));
+              $btn2.prop('disabled', false).text('AI 分析');
+          });
+    }).catch(function(){
+        // If even the cache check failed, fall back to a direct POST so
+        // the user isn't stuck.
+        $btn.prop('disabled', true).text('AI 分析中…');
+        fetch('/api/plugins/changedetect/changedetect/pair/' + pid + '/ai/analyze/', {
+            method: 'POST', credentials: 'same-origin',
+            headers: {
+                'Content-Type': 'application/json', 'Accept': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest', 'X-CSRFToken': getCSRFToken(),
+            },
+            body: JSON.stringify({}),
+        }).then(function(r){ return r.json().then(function(j){ return {ok: r.ok, j: j}; }); })
+          .then(function(res){
+              var $btn2 = $('.cd-ai-analyze-btn[data-pid="' + pid + '"]');
+              if (res.ok && res.j.text){
+                  showInsight(res.j.text, 'analyze', res.j.model, res.j.elapsed_ms);
+              } else {
+                  showToast('error', 'AI 分析失败: ' + (res.j.error || '?'));
+              }
+              $btn2.prop('disabled', false).text('AI 分析');
+          }).catch(function(err){
+              showToast('error', 'AI 分析异常: ' + (err && err.message || err));
+          });
+    });
+});
+
+// Click the "📝 解读" badge to re-open the saved insight.
+$(document).on('click', '.cd-ai-show-insight, .cd-toast-view-insight', function(e){
+    e.preventDefault();
+    var pid = $(this).data('pid');
+    var kind = $(this).data('kind') || 'analyze';
+    fetchJSON('/api/plugins/changedetect/changedetect/pair/' + pid + '/ai/insights').then(function(j){
+        var insights = (j && j.insights) || [];
+        var it = insights.filter(function(x){ return x.kind === kind; })[0];
+        if (!it) return;
+        var ttl = kind === 'summary' ? 'AI 摘要' : 'AI 解读';
+        var md = it.elapsed_ms ? '（耗时 ' + Math.round(it.elapsed_ms/1000) + 's · ' + (it.model || 'LLM') + '）' : '';
+        var body = $('<div>').text(it.text || it.error || '(空)').html().replace(/\n/g, '<br>');
+        showCDModal(
+            ttl + ' ' + md,
+            '<div style="white-space:normal;line-height:1.7;font-size:14px;">' + body + '</div>',
+            [{label: '关闭', cls: 'btn-default', close: true}]
+        );
+    });
+});
+
+// Lightweight celery status poller. We use the same /status endpoint
+// that changedetect already exposes for the main worker. The Celery
+// task we run is registered with with_progress=True so its result is
+// persisted in the standard way.
+function pollCeleryStatus(taskId, label, doneCb){
+    var attempts = 0, maxAttempts = 60;  // 60 * 2s = 2 min
+    var poll = setInterval(function(){
+        attempts++;
+        if (attempts > maxAttempts){
+            clearInterval(poll);
+            showToast('error', label + ' 超时');
+            return;
+        }
+        // WebODM exposes /api/workers/get/<task_id> for celery status
+        // (see app/api/urls.py in the core repo). We poll it to know
+        // when the background classification finishes.
+        fetch('/api/workers/get/' + encodeURIComponent(taskId), {
+            credentials: 'same-origin',
+            headers: {'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
+        }).then(function(r){ return r.json().then(function(j){ return {ok: r.ok, j: j}; }); })
+          .catch(function(){ return {ok: false, j: {status: 'PENDING'}}; })
+          .then(function(res){
+              if (!res.ok) return;
+              var st = res.j.status || res.j.state || 'PENDING';
+              if (st === 'SUCCESS' || st === 'DONE'){
+                  clearInterval(poll);
+                  doneCb && doneCb(res.j.result);
+              } else if (st === 'FAILURE' || st === 'FAILED'){
+                  clearInterval(poll);
+                  showToast('error', label + ' 失败: ' + (res.j.error || '?'));
+              }
+          });
+    }, 2000);
+}
 
 // Download PDF report for a finished pair.
 //

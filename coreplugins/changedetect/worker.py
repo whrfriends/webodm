@@ -601,3 +601,91 @@ try:
 except Exception:
     # If anything fails, fall back to the original (broken) behaviour.
     pass
+
+
+# ===========================================================================
+# AI worker: classify zones of a finished pair
+# ===========================================================================
+#
+# Invoked asynchronously from ChangePairAIClassify when the pair has
+# > 20 features or geodeep is available. The result is written to the
+# ChangeAnnotation table; the API status endpoint already reports
+# progress via celery_task_id so the UI can poll.
+
+def run_ai_classify(pair_id: int, force: bool = False, progress_callback=None):
+    """
+    Run AI classification (geodeep visual + LLM fallback) for every
+    change feature in a finished pair, and persist the result to
+    ChangeAnnotation rows.
+
+    `force=True` wipes existing annotations for the pair first; the
+    default behaviour is to overwrite by (result, feature_index) key
+    so re-running is idempotent.
+
+    progress_callback(pct: 0-100, message: str)  (provided by run_function_async
+    when with_progress=True)
+    """
+    import django
+    import os as _os
+    _os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'webodm.settings')
+    django.setup()
+
+    from .models import ChangePair, ChangeAnnotation
+    from .ai_classify import classify_all_zones_for_pair
+    from django.db import transaction
+
+    if progress_callback:
+        progress_callback(5, f"加载 pair #{pair_id}…")
+
+    try:
+        pair = ChangePair.objects.get(pk=pair_id)
+    except ChangePair.DoesNotExist:
+        if progress_callback:
+            progress_callback(100, "pair 不存在")
+        return {'ok': False, 'error': f'pair {pair_id} not found'}
+
+    if pair.status != 'DONE':
+        return {'ok': False, 'error': f'pair {pair_id} is not DONE (status={pair.status})'}
+
+    if force:
+        deleted, _ = ChangeAnnotation.objects.filter(result__pair=pair).delete()
+        if progress_callback:
+            progress_callback(8, f"已清除 {deleted} 条旧标注")
+
+    def _cb(pct, msg):
+        if progress_callback:
+            progress_callback(8 + int(pct * 0.85), msg)
+
+    result = classify_all_zones_for_pair(pair, progress_callback=_cb)
+    annotations = result.get("annotations", [])
+
+    if progress_callback:
+        progress_callback(95, f"保存 {len(annotations)} 条标注到数据库…")
+
+    with transaction.atomic():
+        for ann in annotations:
+            ChangeAnnotation.objects.update_or_create(
+                result_id=ann["result_id"],
+                feature_index=ann["feature_index"],
+                defaults={
+                    "label": ann["label"],
+                    "confidence": ann["confidence"],
+                    "source": ann.get("source", "llm_fallback"),
+                    "rationale": ann.get("rationale", ""),
+                    "centroid": ann.get("centroid", []),
+                    "bbox": ann.get("bbox", []),
+                    "area_m2": ann.get("area_m2", 0.0),
+                    "model": ann.get("model", "MiniMax-M3"),
+                },
+            )
+
+    if progress_callback:
+        progress_callback(100, "完成")
+
+    return {
+        'ok': True,
+        'saved': len(annotations),
+        'total_features': result.get('total_features', 0),
+        'skipped': result.get('skipped', 0),
+        'errors': result.get('errors', [])[:5],
+    }
