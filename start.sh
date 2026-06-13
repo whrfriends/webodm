@@ -148,6 +148,13 @@ else
     congrats
 
     nginx -c $(pwd)/nginx/$conf
+    # ufly 嵌入版 patch: 在 gunicorn 启动前应用 ufly 嵌入版核心代码修改
+    # (csrf_exempt wrap on app_view_handler / api_view_handler, etc).
+    # 改 host 上 coreplugins/changedetect/scripts/ufly_patches.py → 下次容器
+    # 启动自动应用。容器重建无需重新 build image。
+    if [ -f /webodm/coreplugins/changedetect/scripts/ufly_patches.py ]; then
+        /webodm/venv/bin/python /webodm/coreplugins/changedetect/scripts/ufly_patches.py || echo "ufly_patches failed (non-fatal)"
+    fi
     gunicorn webodm.wsgi --bind unix:/tmp/gunicorn.sock --timeout 300000 --max-requests 5000 --workers $WEB_CONCURRENCY --preload
 fi
 

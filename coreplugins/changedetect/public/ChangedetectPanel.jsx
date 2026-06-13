@@ -384,6 +384,29 @@ export default class ChangedetectPanel extends React.Component {
       layer.addTo(map);
       return { ...l, layer, featCount };
     });
+    // If any overlay actually carries features, fit the map to the
+    // union of their bounds so the user can see them — and so the
+    // PDF screenshot has the change polygons inside the visible area
+    // instead of off-screen. Skip if the map is currently being
+    // interacted with (e.g. user is panning around).
+    //
+    // We use a conservative maxZoom: leaflet's fitBounds otherwise zooms
+    // all the way in to make the (often small) features fill the view,
+    // which makes the underlying orthophoto occupy a tiny corner — not
+    // useful in a report. Capping at 19 keeps the orthophoto large and
+    // visible while still framing the change polygons.
+    try {
+      const allBounds = newOverlays.reduce((acc, ov) => {
+        if (ov.layer && typeof ov.layer.getBounds === 'function'){
+          const b = ov.layer.getBounds();
+          if (b && b.isValid()) return acc ? acc.extend(b) : b;
+        }
+        return acc;
+      }, null);
+      if (allBounds && allBounds.isValid() && !this._userInteracting){
+        map.fitBounds(allBounds, { padding: [40, 40], maxZoom: 19, animate: false });
+      }
+    } catch(e) { /* non-fatal */ }
     // Build a summary the user can see
     const summary = {
       pairId: pair ? pair.id : null,
@@ -420,8 +443,17 @@ export default class ChangedetectPanel extends React.Component {
 
   colorForLayer = (type, shade) => {
     // shade 1 = stroke, 2 = fill
-    const colors = { 'pixel_diff': shade === 1 ? '#e74c3c' : '#ff6b5b',
-                     'dsm_diff':   shade === 1 ? '#3498db' : '#5dade2' };
+    // Models store layer_type as "pixel" / "dsm" / "dtm" (see ChangeResult
+    // model LAYER_* constants). Earlier versions of this method expected
+    // "pixel_diff" / "dsm_diff" suffixes, so anything else fell back to
+    // the gray default and overlays rendered invisible. We accept both
+    // spellings here so old and new pair results both colour correctly.
+    const colors = { 'pixel':      shade === 1 ? '#e74c3c' : '#ff6b5b',
+                     'pixel_diff': shade === 1 ? '#e74c3c' : '#ff6b5b',
+                     'dsm':        shade === 1 ? '#3498db' : '#5dade2',
+                     'dsm_diff':   shade === 1 ? '#3498db' : '#5dade2',
+                     'dtm':        shade === 1 ? '#2ecc71' : '#58d68d',
+                     'dtm_diff':   shade === 1 ? '#2ecc71' : '#58d68d' };
     return colors[type] || (shade === 1 ? '#95a5a6' : '#bdc3c7');
   }
 

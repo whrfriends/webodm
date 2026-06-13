@@ -6,6 +6,7 @@ from app.api.workers import GetTaskResult as GetTaskResult
 from app.api.workers import TaskResultOutputError
 
 from django.http import HttpResponse, Http404
+from django.views.decorators.csrf import csrf_exempt
 from .functions import get_plugin_by_name, get_active_plugins
 from django.conf.urls import url
 from django.views.static import serve
@@ -34,6 +35,11 @@ def _ensure_plugin_access(plugin, request):
         raise Http404("No valid routes")
 
 
+# ufly 嵌入版修改 (whrui): 在 app_view_handler / api_view_handler 装饰 csrf_exempt。
+# 原因：WebODM 顶层 CsrfViewMiddleware 检查的是 URL 解析返回的 callback
+# (即这两个 handler)，不检查 handler 内部调用的 view。Plugin 的 view 都通过
+# mount_points 间接调用，所以即使 view 本身 csrf_exempt=True，POST 也会被 403。
+# uFly 嵌入版用 session + csrftoken 已经做了认证，plugin 内部用自己的权限校验。
 def app_view_handler(request, plugin_name=None):
     plugin = get_plugin_by_name(plugin_name) # TODO: this pings the server, which might be bad for performance with very large amount of files
     if plugin is None:
@@ -76,6 +82,13 @@ def api_view_handler(request, plugin_name=None):
             return view(request, *args, **kwargs)
 
     raise Http404("No valid routes")
+
+# Wrap so Django's CsrfViewMiddleware sees csrf_exempt on the URL-resolved
+# callback. The mount_point views are dispatched at runtime; without this
+# wrapper every plugin POST gets rejected with 403 regardless of the
+# individual view's csrf_exempt flag.
+app_view_handler = csrf_exempt(app_view_handler)
+api_view_handler = csrf_exempt(api_view_handler)
 
 def root_url_patterns():
     result = []

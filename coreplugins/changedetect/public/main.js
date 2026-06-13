@@ -89,7 +89,7 @@ window.CDToast = function(message, kind){
     }, 4500);
 };
 
-function fetchJSON(url, opts){
+function fetchJSON(url, opts, raw){
     opts = opts || {};
     opts.headers = opts.headers || {};
     // Always ask for JSON. WebODM DRF returns HTML for browser
@@ -101,6 +101,7 @@ function fetchJSON(url, opts){
     }
     return fetch(url, {credentials: 'same-origin', ...opts}).then(function(r){
         if (!r.ok) throw new Error('HTTP ' + r.status);
+        if (raw) return r;  // caller wants the raw Response (e.g. for blob download)
         return r.json();
     });
 }
@@ -198,6 +199,9 @@ function refreshPairsTable(projectId){
             var viewBtn = p.status === 'DONE'
                 ? '<button class="btn btn-xs btn-primary cd-view-btn" data-pid="' + p.id + '" data-project="' + projectId + '">查看</button>'
                 : '';
+            var reportBtn = p.status === 'DONE'
+                ? ' <button class="btn btn-xs btn-success cd-report-btn" data-pid="' + p.id + '" data-project="' + projectId + '" data-name="' + (p.name || ('pair_' + p.id)) + '">下载报告</button>'
+                : '';
             $tb.append(
                 '<tr>' +
                 '<td>' + p.id + '</td>' +
@@ -205,7 +209,7 @@ function refreshPairsTable(projectId){
                 '<code>' + $('<div>').text((p.task_after_name || p.task_b || '').slice(0, 18)).html() + '</code></td>' +
                 '<td>' + statusBadge + '</td>' +
                 '<td>' + resultCell + '</td>' +
-                '<td>' + viewBtn + '</td>' +
+                '<td>' + viewBtn + reportBtn + '</td>' +
                 '</tr>'
             );
         });
@@ -334,6 +338,190 @@ $(document).on('click', '.cd-dl-btn', function(){
     var rid = $(this).data('rid');
     window.location.href = '/api/plugins/changedetect/changedetect/pair/' + pid + '/result/' + rid + '/download';
 });
+
+// Download PDF report for a finished pair.
+//
+// Two-stage flow:
+//   1. From the project list: this handler is a "launch" — it navigates
+//      to the project map view with `cd_pair=<pid>&cd_report=1` in the
+//      URL. The screenshot *has* to happen on the map page because the
+//      change-detection GeoJSON overlay is only rendered there.
+//   2. On the map page: when main.js sees `cd_report=1` in the URL, it
+//      waits for the ChangedetectPanel's autoLoadFromUrl → viewPair →
+//      renderResultLayers chain to finish (Leaflet drawing the
+//      overlay), then captures the leaflet container via html2canvas
+//      and POSTs to the report endpoint. The `cd_report` flag is then
+//      stripped from the URL so the user can keep interacting.
+$(document).on('click', '.cd-report-btn', function(e){
+    e.preventDefault();
+    var pid = $(this).data('pid');
+    var projectId = $(this).data('project');
+    var name = $(this).data('name') || ('pair_' + pid);
+    if (!pid || !projectId) return;
+    // Navigate to the project map. The map-side handler below picks
+    // up `cd_report=1` and runs the actual capture.
+    var url = '/map/project/' + projectId + '/?cd_pair=' + pid + '&cd_report=1&cd_name=' + encodeURIComponent(name);
+    window.location.href = url;
+});
+
+// Capture the report screenshot on the map page when ?cd_report=1.
+function maybeAutoCaptureReport(){
+    var params;
+    try { params = new URLSearchParams(window.location.search); }
+    catch(e) { return; }
+    if (!params.get('cd_report')) return;
+    var pid = params.get('cd_pair');
+    var name = params.get('cd_name') || ('pair_' + pid);
+    if (!pid) return;
+    if (typeof window.html2canvas !== 'function'){
+        if (window.showToast) showToast('error', 'html2canvas 未加载，无法生成报告截图');
+        return;
+    }
+    // Strip cd_report from URL early so reloads don't re-trigger
+    params.delete('cd_report');
+    var q = params.toString();
+    var newUrl = window.location.pathname + (q ? '?' + q : '');
+    window.history.replaceState({}, '', newUrl);
+
+    // Toast to tell the user what's happening
+    if (window.showToast) showToast('info', '正在生成 PDF 报告…');
+
+    // Wait until: (a) the leaflet container exists, (b) the
+    // ChangedetectPanel banner shows "已叠加" (i.e. renderResultLayers
+    // finished) AND (c) leaflet tiles have settled (no in-flight loads).
+    // Leaflet sets .leaflet-tile-loading on tile images while they
+    // fetch; we wait until that's gone, then sleep a bit more to let
+    // the GPU composite the new frame.
+    var attempts = 0, maxAttempts = 60;  // 60 * 500ms = 30s
+    var poll = setInterval(function(){
+        attempts++;
+        var mapEl = document.querySelector('.leaflet-container');
+        var banner = document.querySelector('.cd-overlay-loaded');
+        var errBanner = document.querySelector('.cd-overlay-loading');
+        var tilesLoading = document.querySelectorAll('.leaflet-tile-loading').length;
+        if (!mapEl){
+            if (attempts >= maxAttempts){ clearInterval(poll); finishCapture(); }
+            return;
+        }
+        if (banner && tilesLoading === 0 && attempts > 6){
+            clearInterval(poll);
+            // Give Leaflet + GPU two more ticks to finish drawing
+            setTimeout(finishCapture, 2500);
+            return;
+        }
+        if (attempts >= maxAttempts){
+            clearInterval(poll);
+            finishCapture();
+        }
+    }, 500);
+
+    function finishCapture(){
+        var mapEl = document.querySelector('.leaflet-container');
+        if (!mapEl){
+            if (window.showToast) showToast('error', '未找到地图容器，报告生成失败');
+            return;
+        }
+        if (window.showToast) showToast('info', '截取地图叠加…');
+        // Inject capture-mode CSS the first time we need it. We
+        // dynamically build a <style> element with rules that hide
+        // every piece of Leaflet chrome (zoom buttons, attribution,
+        // plugin controls like layers / measure / fullscreen / our
+        // own changedetect button) so the screenshot is just the
+        // orthophoto + change-detection overlay.
+        if (!document.getElementById('cd-capture-style')){
+            var s = document.createElement('style');
+            s.id = 'cd-capture-style';
+            s.textContent =
+                'body.cd-capture-mode .leaflet-control-container,' +
+                'body.cd-capture-mode .leaflet-control,' +
+                'body.cd-capture-mode .leaflet-control-attribution,' +
+                'body.cd-capture-mode .leaflet-popup-pane,' +
+                'body.cd-capture-mode .leaflet-tooltip-pane {' +
+                '  display: none !important; visibility: hidden !important;' +
+                '}' +
+                // Also make sure no element outside the map is captured
+                'body.cd-capture-mode .navbar,' +
+                'body.cd-capture-mode .app-sidebar,' +
+                'body.cd-capture-mode .cd-overlay-banner,' +
+                'body.cd-capture-mode .changedetect-panel,' +
+                'body.cd-capture-mode #cd-toast-container {' +
+                '  display: none !important;' +
+                '}' +
+                'body.cd-capture-mode .leaflet-container {' +
+                '  box-shadow: none !important;' +
+                '}';
+            document.head.appendChild(s);
+        }
+        // Toggle the class so CSS hides the chrome
+        document.body.classList.add('cd-capture-mode');
+        // One frame for CSS to apply + Leaflet to repaint
+        var captureEl = mapEl;
+        var origWidth = mapEl.style.width, origHeight = mapEl.style.height;
+        var w = mapEl.scrollWidth || mapEl.clientWidth;
+        var h = mapEl.scrollHeight || mapEl.clientHeight;
+        var release = function(){
+            document.body.classList.remove('cd-capture-mode');
+            if (origWidth) mapEl.style.width = origWidth;
+            if (origHeight) mapEl.style.height = origHeight;
+        };
+        window.html2canvas(captureEl, {
+            backgroundColor: '#ffffff',
+            scale: 1,
+            useCORS: true,
+            logging: false,
+            width: w,
+            height: h,
+            windowWidth: w,
+            windowHeight: h,
+        }).then(function(canvas){
+            var dataUrl = canvas.toDataURL('image/png');
+            return fetch('/api/plugins/changedetect/changedetect/pair/' + pid + '/report/', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'X-CSRFToken': getCSRFToken(),
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({screenshot: dataUrl, title_suffix: name}),
+            });
+        }).then(function(resp){
+            if (!resp || !resp.ok){
+                return resp.text().then(function(t){ throw new Error('HTTP ' + resp.status + ': ' + t.slice(0, 200)); });
+            }
+            return resp.blob();
+        }).then(function(blob){
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = 'changedetect_' + pid + '_' + String(name).replace(/[^\w\u4e00-\u9fa5-]/g, '_') + '.pdf';
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(function(){
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }, 200);
+            if (window.showToast) showToast('success', 'PDF 报告已下载');
+        }).catch(function(err){
+            console.error('PDF report failed', err);
+            if (window.showToast) showToast('error', 'PDF 报告生成失败: ' + (err && err.message || err));
+        }).then(release, release);
+    }
+}
+
+// Hook into the existing startObserver chain so the auto-capture runs
+// on every page that includes the changedetect plugin's JS — i.e. the
+// project map view. startObserver is called after jQuery + DOM are
+// ready; calling it again here is safe because the underlying
+// functions are idempotent.
+if (document.readyState === 'complete' || document.readyState === 'interactive'){
+    setTimeout(maybeAutoCaptureReport, 0);
+} else {
+    document.addEventListener('DOMContentLoaded', function(){
+        setTimeout(maybeAutoCaptureReport, 0);
+    });
+}
 
 // Inject button into project list rows. WebODM / ufly's project
 // list items have:

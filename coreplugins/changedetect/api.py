@@ -381,3 +381,64 @@ class ChangeResultDownload(ChangeDetectAPIView):
         f = open(result.geojson_path, 'rb')
         return FileResponse(f, content_type='application/geo+json',
                             as_attachment=True, filename=filename)
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class ChangePairReport(ChangeDetectAPIView):
+    """
+    POST /api/plugins/changedetect/changedetect/pair/<pk>/report/
+
+    Body (JSON):
+      {
+        "screenshot": "data:image/png;base64,...",   # full page with overlay
+        "map":        "data:image/png;base64,...",   # optional: just the leaflet map
+        "title_suffix": "Q1 vs Q2"                    # optional
+      }
+
+    Returns:
+      application/pdf (the report file)
+    """
+    permission_classes = (permissions.AllowAny,)
+
+    def post(self, request, pk=None, **kwargs):
+        pair = _get_pair_or_404(request, pk)
+        if pair.status != 'DONE':
+            return Response({'error': _('Only DONE pairs can be exported as a report.')},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        body = request.data if hasattr(request, 'data') else {}
+        screenshot_b64 = body.get('screenshot') if hasattr(body, 'get') else None
+        map_b64 = body.get('map') if hasattr(body, 'get') else None
+        title_suffix = body.get('title_suffix', '') if hasattr(body, 'get') else ''
+
+        if not screenshot_b64:
+            return Response({'error': _('Missing "screenshot" field (base64 PNG).')},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            from .report import build_report
+            pdf_bytes = build_report(
+                pair=pair, project=pair.project,
+                screenshot_b64=screenshot_b64, map_b64=map_b64,
+                title_suffix=title_suffix or '',
+            )
+        except ImportError as e:
+            import traceback
+            with open('/tmp/cd_report_err.log', 'w') as f:
+                f.write(traceback.format_exc())
+            return Response({'error': f'reportlab not installed: {e}'},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception as e:
+            import traceback
+            with open('/tmp/cd_report_err.log', 'w') as f:
+                f.write(traceback.format_exc())
+            log.exception("PDF build failed")
+            return Response({'error': f'PDF build failed: {e}'},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        safe_name = (pair.name or f'pair_{pair.id}').replace(' ', '_').replace('/', '-')[:60]
+        filename = f'changedetect_{pair.id}_{safe_name}.pdf'
+        resp = HttpResponse(pdf_bytes, content_type='application/pdf')
+        resp['Content-Disposition'] = f'attachment; filename="{filename}"'
+        resp['Content-Length'] = str(len(pdf_bytes))
+        return resp
