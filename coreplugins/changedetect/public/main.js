@@ -255,7 +255,14 @@ function refreshPairsTable(projectId){
         var $tb = $('#cd-pairs-tbody');
         $tb.empty();
         if (!pairs.length){
-            $tb.append('<tr><td colspan="5" class="text-muted">暂无 pair</td></tr>');
+            // Empty-state hint: tell the user how to make a pair, so
+            // they're not stuck wondering why the table is empty.
+            $tb.append(
+                '<tr><td colspan="5" class="text-muted" style="padding:18px 10px;">' +
+                '本项目还没有变化检测 pair。<br>' +
+                '请在上方选 <b>基准任务 (T1)</b> 和 <b>对比任务 (T2)</b>，点「提交」创建第一个。' +
+                '</td></tr>'
+            );
             return;
         }
         // For each DONE pair, also fetch AI insights so the row can show
@@ -266,7 +273,7 @@ function refreshPairsTable(projectId){
         var inflight = pairs.filter(function(p){ return p.status === 'DONE'; });
         var done = inflight.length;
         if (done === 0) {
-            renderPairRows(pairs, insightCache);
+            renderPairRows(projectId, pairs, insightCache);
             return;
         }
         inflight.forEach(function(p){
@@ -279,7 +286,7 @@ function refreshPairsTable(projectId){
                 })
                 .then(function(){
                     done--;
-                    if (done === 0) renderPairRows(pairs, insightCache);
+                    if (done === 0) renderPairRows(projectId, pairs, insightCache);
                 });
         });
     }).catch(function(e){
@@ -287,7 +294,7 @@ function refreshPairsTable(projectId){
     });
 }
 
-function renderPairRows(pairs, insightCache){
+function renderPairRows(projectId, pairs, insightCache){
     var $tb = $('#cd-pairs-tbody');
     pairs.forEach(function(p){
         var statusBadge = {
